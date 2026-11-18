@@ -21,12 +21,13 @@
 
             <div class="p-3 bg-light rounded-3 border d-flex align-items-center justify-content-between flex-wrap gap-2">
                 <div>
-                    <small class="text-muted d-block uppercase fw-semibold">Current Session Status</small>
+                    <small class="text-muted d-block uppercase fw-semibold">Current Open Sessions (Mixing Active)</small>
                     <strong class="fs-5 text-dark">
-                        {% if current_session %}
-                            <i class="bi bi-broadcast text-success me-1"></i> {{ current_session.name }} (Active)
+                        {% if open_sessions %}
+                            <i class="bi bi-broadcast text-success me-1"></i>
+                            {% for os in open_sessions %}{{ os.name }}{% if not loop.last %}, {% endif %}{% endfor %}
                         {% else %}
-                            <i class="bi bi-slash-circle text-secondary me-1"></i> No Active Allocation Session
+                            <i class="bi bi-slash-circle text-secondary me-1"></i> No Open Allocation Sessions
                         {% endif %}
                     </strong>
                 </div>
@@ -38,7 +39,7 @@
     <div class="col-lg-4">
         <div class="card card-custom h-100 p-4">
             <h4 class="fw-bold mb-3"><i class="bi bi-plus-circle text-primary me-2"></i>Request Jobs</h4>
-            {% if current_session %}
+            {% if open_sessions %}
                 <form method="post" action="{{ url_for('request_jobs') }}">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <div class="mb-3">
@@ -123,7 +124,7 @@
                                     {% if a.status != 'allocated' %}
                                         <div class="bg-light p-2 rounded border small">
                                             <div><strong>Station:</strong> <span class="font-monospace text-success fw-bold">{{ a.ip_address or 'System Workstation' }}</span></div>
-                                            <div><strong>Matriculation:</strong> <span class="font-monospace text-primary">{{ a.mat_no }}</span></div>
+                                            <div><strong>Matriculation:</strong> <span class="font-monospace text-primary fw-bold" style="cursor: pointer;" title="Click to copy" onclick="copyMat('{{ a.mat_no }}', this)">{{ a.mat_no }} <i class="bi bi-clipboard ms-1 text-muted" style="font-size: 0.8rem;"></i></span></div>
                                             <div><strong>Course Code:</strong> <span class="badge bg-dark">{{ a.course_code }}</span></div>
                                             {% if a.student_name %}<div><strong>Student Name:</strong> {{ a.student_name }}</div>{% endif %}
                                             {% if a.department %}<div><strong>Department:</strong> {{ a.department }}</div>{% endif %}
@@ -266,7 +267,7 @@
                                 <td>
                                     <div class="bg-light p-2 rounded border small">
                                         <div><strong>Station:</strong> <span class="font-monospace text-success fw-bold">{{ ca.ip_address or 'System Workstation' }}</span></div>
-                                        <div><strong>Matriculation:</strong> <span class="font-monospace text-primary">{{ ca.mat_no }}</span></div>
+                                        <div><strong>Matriculation:</strong> <span class="font-monospace text-primary fw-bold" style="cursor: pointer;" title="Click to copy" onclick="copyMat('{{ ca.mat_no }}', this)">{{ ca.mat_no }} <i class="bi bi-clipboard ms-1 text-muted" style="font-size: 0.8rem;"></i></span></div>
                                         <div><strong>Course Code:</strong> <span class="badge bg-dark">{{ ca.course_code }}</span></div>
                                         {% if ca.student_name %}<div><strong>Student Name:</strong> {{ ca.student_name }}</div>{% endif %}
                                         {% if ca.department %}<div><strong>Department:</strong> {{ ca.department }}</div>{% endif %}
@@ -303,7 +304,16 @@ document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('.timer-container').forEach(container => {
         const startStr = container.dataset.timerStart;
         if (!startStr) return;
-        const startTime = new Date(startStr.replace(/-/g, '/')).getTime();
+
+        let startTime;
+        if (!isNaN(startStr)) {
+            startTime = parseInt(startStr, 10);
+        } else {
+            startTime = new Date(startStr.replace(/-/g, '/')).getTime();
+        }
+
+        if (isNaN(startTime)) return;
+
         const countdownText = container.querySelector('.countdown-text');
         const timerDisplay = container.querySelector('.timer-display');
         const submitSection = container.querySelector('.submit-section');
@@ -314,17 +324,18 @@ document.addEventListener('DOMContentLoaded', function () {
             const remainingSecs = totalSeconds - elapsedSecs;
 
             if (remainingSecs <= 0) {
-                countdownText.textContent = "00:00 (Time Expired)";
+                if (countdownText) countdownText.textContent = "00:00 (Time Expired)";
                 if (timerDisplay) timerDisplay.className = "alert alert-danger p-2 small mb-2 timer-display shadow-sm fw-bold border-danger";
-                submitSection.classList.remove('d-none');
+                if (submitSection) submitSection.classList.remove('d-none');
                 return;
             }
 
             const mins = Math.floor(remainingSecs / 60);
             const secs = remainingSecs % 60;
-            countdownText.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+            if (countdownText) {
+                countdownText.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+            }
 
-            // Turn red when 5 minutes or less remaining
             if (timerDisplay) {
                 if (remainingSecs <= warningSeconds) {
                     timerDisplay.className = "alert alert-danger p-2 small mb-2 timer-display shadow-sm fw-bold border-danger";
@@ -333,11 +344,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
             }
 
-            // Reveal End Exam / Submit button after 30 minutes have elapsed or when time is running low
-            if (elapsedSecs >= requiredElapsedForSubmit || remainingSecs <= warningSeconds) {
-                submitSection.classList.remove('d-none');
-            } else {
-                submitSection.classList.add('d-none');
+            if (submitSection) {
+                if (elapsedSecs >= requiredElapsedForSubmit || remainingSecs <= warningSeconds) {
+                    submitSection.classList.remove('d-none');
+                } else {
+                    submitSection.classList.add('d-none');
+                }
             }
         }
 

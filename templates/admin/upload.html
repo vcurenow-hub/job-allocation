@@ -67,6 +67,14 @@
                     <textarea name="already_done_text" class="form-control font-monospace" rows="3" placeholder="nou123456789 GST101&#10;nou987654321 GST102"></textarea>
                 </div>
 
+                <!-- Auto Allocate Switch -->
+                <div class="form-check form-switch mb-4 p-3 bg-light border rounded">
+                    <input class="form-check-input" type="checkbox" name="auto_allocate" id="autoAllocateCheck" value="1" checked>
+                    <label class="form-check-label fw-bold text-dark" for="autoAllocateCheck">
+                        <i class="bi bi-lightning-charge-fill text-warning me-1"></i> Automatically allocate uploaded jobs to approved users immediately
+                    </label>
+                </div>
+
                 <div class="tab-content" id="uploadTabsContent">
                     <!-- CHAT BOX TAB -->
                     <div class="tab-pane fade show active" id="chat-pane" role="tabpanel">

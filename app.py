@@ -1568,9 +1568,7 @@ def upload_records():
     has_gemini_key = bool(os.environ.get("GEMINI_API_KEY"))
 
     if request.method == "POST":
-        file = request.files.get("file")
-        pasted_text = request.form.get("pasted_text", "").strip()
-        already_done_text = request.form.get("already_done_text", "").strip()
+        auto_allocate = request.form.get("auto_allocate") == "1"
         selected_session_val = request.form.get("session_id", "auto")
 
         try:
@@ -1630,6 +1628,23 @@ def upload_records():
 
             con.commit()
 
+            if auto_allocate and added > 0:
+                try:
+                    approved_users = con.execute("""
+                        SELECT id FROM users WHERE role='user' AND approved=1 AND active=1
+                    """).fetchall()
+                    if approved_users:
+                        open_sessions = con.execute("SELECT id FROM work_sessions WHERE is_open=1").fetchall()
+                        for os_row in open_sessions:
+                            sid = os_row["id"]
+                            for u in approved_users:
+                                try:
+                                    allocate_jobs_to_user(con, sid, u["id"], 5, manual=False)
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+
             audit(current_user()["id"], "UPLOAD_RECORDS",
                   f"Added {added}, duplicates {duplicates}, corrections {corrections}")
             notify_admin(f"Record upload: {added} added, {duplicates} duplicates skipped.")
@@ -1639,6 +1654,8 @@ def upload_records():
                 f"✨ {engine_label} organized {added} records into 8:00 AM ({bucket_counts.get('8:00 AM', 0)}), "
                 f"11:00 AM ({bucket_counts.get('11:00 AM', 0)}), and 2:00 PM ({bucket_counts.get('2:00 PM', 0)}). "
             )
+            if auto_allocate and added > 0:
+                breakdown_msg += "Jobs were also automatically allocated to available users! "
             if corrections > 0:
                 breakdown_msg += f"Healed & fixed {corrections} OCR typos/formatting errors! "
             if duplicates > 0:
