@@ -1,0 +1,688 @@
+{% extends "base.html" %}
+
+{% block title %}Upload & Session Tables Management{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center mb-5">
+    <div class="col-lg-10">
+        <div class="card card-custom p-4 mb-4">
+            <div class="d-flex align-items-center justify-content-between border-bottom pb-3 mb-4">
+                <div>
+                    <h3 class="fw-bold mb-1"><i class="bi bi-cpu-fill text-primary me-2"></i>AI Intelligent Job Entry & Auto-Arranger</h3>
+                    <p class="text-muted mb-0">Paste job text directly into the chat box or upload a record file. The AI engine heals OCR typos and auto-routes them into 8:00 AM, 11:00 AM, and 2:00 PM sessions.</p>
+                </div>
+                {% if has_gemini_key %}
+                    <span class="badge bg-success-subtle text-success border border-success px-3 py-2 fw-bold">
+                        <i class="bi bi-stars me-1"></i> Gemini AI Active
+                    </span>
+                {% else %}
+                    <span class="badge bg-primary-subtle text-primary border border-primary px-3 py-2 fw-bold">
+                        <i class="bi bi-robot me-1"></i> Smart AI Active
+                    </span>
+                {% endif %}
+            </div>
+
+            <!-- Import Method Tabs -->
+            <ul class="nav nav-pills mb-4 nav-justified" id="uploadTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active fw-bold py-2" id="chat-tab" data-bs-toggle="tab" data-bs-target="#chat-pane" type="button" role="tab">
+                        <i class="bi bi-chat-square-text-fill me-2"></i>Paste Jobs (Chat Box)
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link fw-bold py-2" id="file-tab" data-bs-toggle="tab" data-bs-target="#file-pane" type="button" role="tab">
+                        <i class="bi bi-file-earmark-arrow-up me-2"></i>Upload Record File (.docx, .txt, .csv, .xlsx)
+                    </button>
+                </li>
+            </ul>
+
+            <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_records') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                <!-- Target Session Selection -->
+                <div class="card bg-light p-3 mb-4 border">
+                    <label class="form-label font-semibold text-dark mb-2">
+                        <i class="bi bi-diagram-3-fill text-primary me-1"></i> Session Routing Mode
+                    </label>
+                    <select name="session_id" class="form-select form-select-lg fw-bold" required>
+                        <option value="auto" selected>🤖 Smart AI Multi-Session Routing (Auto-detect & route into 8am, 11am, 2pm)</option>
+                        <option disabled>────────── Force Single Target Session ──────────</option>
+                        {% for s in sessions %}
+                            <option value="{{ s.id }}">{{ s.name }} Session (Sequence #{{ s.sequence }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="tab-content" id="uploadTabsContent">
+                    <!-- CHAT BOX TAB -->
+                    <div class="tab-pane fade show active" id="chat-pane" role="tabpanel">
+                        <div class="card border-primary-subtle shadow-sm mb-3">
+                            <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                                <span class="fw-bold"><i class="bi bi-chat-square-dots me-2"></i>Job Paste Chat Box</span>
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="badge bg-light text-dark" id="recordCountBadge">0 Records</span>
+                                    <button type="button" class="btn btn-sm btn-outline-light" id="clearTextBtn">Clear</button>
+                                </div>
+                            </div>
+                            <div class="card-body p-3">
+                                <p class="small text-muted mb-2">
+                                    <i class="bi bi-info-circle me-1"></i> Paste unorganized jobs below. Includes OCR auto-correction and section time headers.
+                                </p>
+                                <textarea name="pasted_text" id="pastedText" class="form-control font-monospace" rows="9" placeholder="Paste your job list here...&#10;e.g. 8:30AM&#10;nou261113275 PCR111&#10;11AM&#10;nou233442995 PCR211&#10;2PM&#10;nou241771075 POL228"></textarea>
+                            </div>
+                        </div>
+
+                        <!-- AI Intelligence Real-Time Summary Cards -->
+                        <div class="row g-2 mb-3">
+                            <div class="col-6 col-md-3">
+                                <div class="p-2 bg-light border rounded text-center">
+                                    <small class="text-muted d-block uppercase fw-bold">8:00 AM Session</small>
+                                    <span class="fs-5 fw-bold text-primary" id="cnt8am">0 Jobs</span>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="p-2 bg-light border rounded text-center">
+                                    <small class="text-muted d-block uppercase fw-bold">11:00 AM Session</small>
+                                    <span class="fs-5 fw-bold text-info" id="cnt11am">0 Jobs</span>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="p-2 bg-light border rounded text-center">
+                                    <small class="text-muted d-block uppercase fw-bold">2:00 PM Session</small>
+                                    <span class="fs-5 fw-bold text-warning" id="cnt2pm">0 Jobs</span>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="p-2 bg-light border rounded text-center">
+                                    <small class="text-muted d-block uppercase fw-bold">AI Healed Typos</small>
+                                    <span class="fs-5 fw-bold text-success" id="cntHealed">0 Fixed</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Live Interactive Arranged Preview -->
+                        <div class="card card-custom mb-4 border">
+                            <div class="card-header-custom d-flex justify-content-between align-items-center bg-light py-2">
+                                <h6 class="mb-0 fw-bold"><i class="bi bi-sort-down text-primary me-2"></i>Live Auto-Arranged Preview</h6>
+                                <small class="text-muted">Session Bucket &rarr; Time &rarr; Mat No &rarr; Course Code</small>
+                            </div>
+                            <div class="table-responsive" style="max-height: 320px;">
+                                <table class="table table-sm table-hover align-middle mb-0" id="previewTable">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Target Session Bucket</th>
+                                            <th>Extracted Time</th>
+                                            <th>Matriculation No</th>
+                                            <th>Course Code</th>
+                                            <th>Details & AI Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="previewBody">
+                                        <tr>
+                                            <td colspan="6" class="text-center py-4 text-muted">
+                                                <i class="bi bi-arrow-up-circle fs-4 d-block mb-1"></i>
+                                                Paste text into the chat box above to see real-time AI auto-arranged records.
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Dedicated Upload Button for Pasted Data -->
+                        <div class="mb-4">
+                            <button type="submit" class="btn btn-success btn-lg w-100 fw-bold py-3 shadow">
+                                <i class="bi bi-cloud-arrow-up-fill me-2"></i> Upload Pasted Mat Numbers & Courses
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- FILE UPLOAD TAB -->
+                    <div class="tab-pane fade" id="file-pane" role="tabpanel">
+                        <div class="card p-4 border shadow-sm mb-4">
+                            <div class="alert alert-info small mb-3">
+                                <i class="bi bi-file-earmark-text me-1"></i> Upload a Word <code>.docx</code>, plain text <code>.txt</code>, spreadsheet <code>.csv</code>, or Excel <code>.xlsx</code> file.
+                            </div>
+                            <label class="form-label font-semibold">Select File</label>
+                            <input type="file" name="file" class="form-control form-control-lg" accept=".docx,.txt,.csv,.xlsx">
+                            <div class="form-text mb-3">File contents will be processed by the AI Engine and auto-routed into sessions.</div>
+
+                            <!-- Dedicated Upload Button for Imported File -->
+                            <button type="submit" class="btn btn-success btn-lg w-100 fw-bold py-3 shadow">
+                                <i class="bi bi-file-earmark-arrow-up-fill me-2"></i> Upload Imported Record File
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn btn-primary btn-lg w-100 fw-bold py-3 shadow">
+                    <i class="bi bi-cloud-arrow-up-fill me-2"></i> Upload Arranged Jobs
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- UPLOADED COPIES IN SESSION TABLES (8 AM, 11 AM, 2 PM)        -->
+<!-- ============================================================ -->
+<div class="row">
+    <div class="col-12">
+        <div class="card card-custom p-4 shadow-sm">
+            <div class="d-flex justify-content-between align-items-center mb-4 border-bottom pb-3 flex-wrap gap-2">
+                <div>
+                    <h3 class="fw-bold mb-1"><i class="bi bi-table text-primary me-2"></i>All Uploaded Copies in Session Tables (8 AM, 11 AM, 2 PM)</h3>
+                    <p class="text-muted mb-0">Search, edit, delete, add records, or clear entire sections to re-upload.</p>
+                </div>
+            </div>
+
+            <!-- Session Tabs Header -->
+            <ul class="nav nav-pills mb-4 nav-justified" id="uploadedSessionTables" role="tablist">
+                {% for data in session_data %}
+                    {% set s = data.session %}
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link fw-bold py-3 {% if loop.first %}active{% endif %}" id="up-tab-{{ s.id }}" data-bs-toggle="pill" data-bs-target="#up-pane-{{ s.id }}" type="button" role="tab">
+                            <i class="bi bi-clock-fill me-2"></i>{{ s.name }} Table
+                            <span class="badge {% if s.is_open %}bg-success{% else %}bg-secondary{% endif %} ms-2">
+                                {% if s.is_open %}OPEN{% else %}CLOSED{% endif %}
+                            </span>
+                            <span class="badge bg-light text-dark ms-1">({{ data.rows|length }} Jobs)</span>
+                        </button>
+                    </li>
+                {% endfor %}
+            </ul>
+
+            <!-- Session Tab Contents -->
+            <div class="tab-content" id="uploadedSessionContent">
+                {% for data in session_data %}
+                    {% set s = data.session %}
+                    <div class="tab-pane fade {% if loop.first %}show active{% endif %}" id="up-pane-{{ s.id }}" role="tabpanel">
+                        <div class="card border p-3 mb-3 bg-light">
+                            <div class="d-flex justify-content-between align-items-center border-bottom pb-3 mb-3 flex-wrap gap-2">
+                                <div>
+                                    <h5 class="fw-bold mb-1">
+                                        {{ s.name }} Session Table
+                                        {% if s.is_open %}
+                                            <span class="badge bg-success ms-2">🟢 ACTIVE</span>
+                                        {% else %}
+                                            <span class="badge bg-danger ms-2">🔴 STOPPED (CLOSED)</span>
+                                        {% endif %}
+                                    </h5>
+                                </div>
+                                <div class="d-flex gap-2 flex-wrap">
+                                    <!-- Add Record Button -->
+                                    <button type="button" class="btn btn-primary btn-sm fw-bold px-3" data-bs-toggle="modal" data-bs-target="#addJobModal{{ s.id }}">
+                                        <i class="bi bi-plus-circle me-1"></i> Add Record to Table
+                                    </button>
+
+                                    <!-- Clear Entire Section Button -->
+                                    <form method="post" action="{{ url_for('admin_clear_session', sid=s.id) }}" onsubmit="return confirm('Clear ALL records in {{ s.name }} section? You can then re-upload a fresh file.');">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="btn btn-outline-danger btn-sm fw-bold px-3">
+                                            <i class="bi bi-trash3 me-1"></i> Clear Section & Re-Upload
+                                        </button>
+                                    </form>
+
+                                    {% if s.is_open %}
+                                        <form method="post" action="{{ url_for('close_session', sid=s.id) }}" onsubmit="return confirm('Close {{ s.name }} table? Allocations will stop immediately.');">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <button type="submit" class="btn btn-danger btn-sm fw-bold px-3">
+                                                <i class="bi bi-lock-fill me-1"></i> Close Table
+                                            </button>
+                                        </form>
+                                    {% else %}
+                                        <form method="post" action="{{ url_for('open_session', sid=s.id) }}" onsubmit="return confirm('Open {{ s.name }} table? Allocations will resume.');">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <button type="submit" class="btn btn-success btn-sm fw-bold px-3">
+                                                <i class="bi bi-unlock-fill me-1"></i> Open Table
+                                            </button>
+                                        </form>
+                                    {% endif %}
+                                </div>
+                            </div>
+
+                            <!-- Table Search Bar -->
+                            <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+                                <h6 class="fw-bold mb-0 text-dark"><i class="bi bi-search me-2 text-primary"></i>Search {{ s.name }} Table</h6>
+                                <div style="width: 300px;">
+                                    <input type="text" class="form-control form-control-sm table-search-input" data-target-table="uploadTable-{{ s.id }}" placeholder="Search mat no, course, user...">
+                                </div>
+                            </div>
+
+                            <!-- Scrolling Table -->
+                            <div class="table-responsive" style="max-height: 450px; overflow-y: auto;">
+                                <table class="table table-hover table-sm table-custom align-middle mb-0 bg-white" id="uploadTable-{{ s.id }}">
+                                    <thead class="table-light sticky-top">
+                                        <tr>
+                                            <th>#ID</th>
+                                            <th>Matriculation No</th>
+                                            <th>Course Code</th>
+                                            <th>Student / Dept</th>
+                                            <th>Job Status</th>
+                                            <th>Assigned User</th>
+                                            <th>Allocation Status</th>
+                                            <th>Score</th>
+                                            <th class="text-end">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for r in data.rows %}
+                                            <tr>
+                                                <td class="fw-bold text-muted">#{{ r.id }}</td>
+                                                <td><span class="font-monospace fw-bold text-primary">{{ r.mat_no }}</span></td>
+                                                <td><span class="badge bg-secondary">{{ r.course_code }}</span></td>
+                                                <td class="small">
+                                                    {% if r.student_name %}<div class="fw-semibold">{{ r.student_name }}</div>{% endif %}
+                                                    {% if r.department %}<div class="text-muted">{{ r.department }}</div>{% endif %}
+                                                    {% if not r.student_name and not r.department %}<span class="text-muted">-</span>{% endif %}
+                                                    {% if r.multi_count and r.multi_count > 1 %}
+                                                        <div class="badge bg-warning text-dark mt-1">💻 Same Computer ({{ r.multi_count }})</div>
+                                                    {% endif %}
+                                                </td>
+                                                <td>
+                                                    {% if r.status == 'available' %}<span class="badge bg-success">Available</span>
+                                                    {% elif r.status == 'assigned' %}<span class="badge bg-primary">Assigned</span>
+                                                    {% elif r.status == 'review' %}<span class="badge bg-danger">Review</span>
+                                                    {% else %}<span class="badge bg-secondary">{{ r.status }}</span>{% endif %}
+                                                </td>
+                                                <td>
+                                                    {% if r.assigned_user %}
+                                                        <span class="badge bg-info text-dark fw-bold">{{ r.assigned_user }}</span>
+                                                    {% else %}
+                                                        <span class="text-muted small italic">Unassigned</span>
+                                                    {% endif %}
+                                                </td>
+                                                <td>
+                                                    {% if r.allocation_status %}
+                                                        <span class="badge badge-{{ r.allocation_status }} px-2 py-1">{{ r.allocation_status.upper() }}</span>
+                                                    {% else %}
+                                                        <span class="text-muted small">-</span>
+                                                    {% endif %}
+                                                </td>
+                                                <td>
+                                                    {% if r.score is not none %}<span class="fw-bold text-success">{{ r.score }}%</span>
+                                                    {% else %}<span class="text-muted">-</span>{% endif %}
+                                                </td>
+                                                <td class="text-end">
+                                                    <div class="dropdown">
+                                                        <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">Actions</button>
+                                                        <ul class="dropdown-menu dropdown-menu-end shadow">
+                                                            <li>
+                                                                <button type="button" class="dropdown-item text-dark" data-bs-toggle="modal" data-bs-target="#editJobModalUpload{{ r.id }}">
+                                                                    <i class="bi bi-pencil-square me-2"></i> Edit Record
+                                                                </button>
+                                                            </li>
+                                                            {% if r.allocation_id and r.assigned_user %}
+                                                                <li>
+                                                                    <form method="post" action="{{ url_for('admin_remove_and_replace', allocation_id=r.allocation_id) }}" onsubmit="return confirm('Remove & reassign?');">
+                                                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                                        <button type="submit" class="dropdown-item text-primary"><i class="bi bi-arrow-repeat me-2"></i> Remove & Auto-Reassign</button>
+                                                                    </form>
+                                                                </li>
+                                                                <li>
+                                                                    <form method="post" action="{{ url_for('admin_remove_no_action', allocation_id=r.allocation_id) }}" onsubmit="return confirm('Unassign?');">
+                                                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                                        <button type="submit" class="dropdown-item text-warning"><i class="bi bi-unlock me-2"></i> Remove & Release Slot</button>
+                                                                    </form>
+                                                                </li>
+                                                                <li><hr class="dropdown-divider"></li>
+                                                            {% endif %}
+                                                            <li>
+                                                                <form method="post" action="{{ url_for('admin_delete_job', job_id=r.id) }}" onsubmit="return confirm('Delete job?');">
+                                                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                                    <button type="submit" class="dropdown-item text-danger"><i class="bi bi-trash me-2"></i> Delete Job Entirely</button>
+                                                                </form>
+                                                            </li>
+                                                        </ul>
+                                                    </div>
+                                                </td>
+                                            </tr>
+
+                                            <!-- Edit Record Modal for Upload Row {{ r.id }} -->
+                                            <div class="modal fade" id="editJobModalUpload{{ r.id }}" tabindex="-1" aria-hidden="true">
+                                                <div class="modal-dialog">
+                                                    <div class="modal-content">
+                                                        <form method="post" action="{{ url_for('admin_edit_job', job_id=r.id) }}">
+                                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                            <div class="modal-header bg-dark text-white">
+                                                                <h5 class="modal-title fw-bold">Edit Record #{{ r.id }}</h5>
+                                                                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                                                            </div>
+                                                            <div class="modal-body text-start">
+                                                                <div class="mb-3">
+                                                                    <label class="form-label font-semibold">Matriculation Number</label>
+                                                                    <input type="text" name="mat_no" class="form-control" value="{{ r.mat_no }}" pattern="nou[0-9]{9}" required>
+                                                                    <div class="form-text">Format: nou followed by 9 digits</div>
+                                                                </div>
+                                                                <div class="mb-3">
+                                                                    <label class="form-label font-semibold">Course Code</label>
+                                                                    <input type="text" name="course_code" class="form-control" value="{{ r.course_code }}" pattern="[A-Za-z]{3}[0-9]{3}" required>
+                                                                    <div class="form-text">Format: 3 letters followed by 3 digits (e.g. GST101)</div>
+                                                                </div>
+                                                                <div class="mb-3">
+                                                                    <label class="form-label font-semibold">Student Name</label>
+                                                                    <input type="text" name="student_name" class="form-control" value="{{ r.student_name or '' }}">
+                                                                </div>
+                                                                <div class="mb-3">
+                                                                    <label class="form-label font-semibold">Department</label>
+                                                                    <input type="text" name="department" class="form-control" value="{{ r.department or '' }}">
+                                                                </div>
+                                                            </div>
+                                                            <div class="modal-footer">
+                                                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                                                <button type="submit" class="btn btn-primary fw-bold">Save Changes</button>
+                                                            </div>
+                                                        </form>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        {% else %}
+                                            <tr>
+                                                <td colspan="9" class="text-center py-4 text-muted">No records uploaded for {{ s.name }} table yet.</td>
+                                            </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Add Record Modal for Session {{ s.id }} -->
+                        <div class="modal fade" id="addJobModal{{ s.id }}" tabindex="-1" aria-hidden="true">
+                            <div class="modal-dialog">
+                                <div class="modal-content">
+                                    <form method="post" action="{{ url_for('admin_add_job', sid=s.id) }}">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <div class="modal-header bg-primary text-white">
+                                            <h5 class="modal-title fw-bold">Add Record to {{ s.name }} Table</h5>
+                                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                                        </div>
+                                        <div class="modal-body text-start">
+                                            <div class="mb-3">
+                                                <label class="form-label font-semibold">Matriculation Number</label>
+                                                <input type="text" name="mat_no" class="form-control" placeholder="nou123456789" pattern="nou[0-9]{9}" required>
+                                                <div class="form-text">Format: nou followed by 9 digits</div>
+                                            </div>
+                                            <div class="mb-3">
+                                                <label class="form-label font-semibold">Course Code</label>
+                                                <input type="text" name="course_code" class="form-control" placeholder="GST101" pattern="[A-Za-z]{3}[0-9]{3}" required>
+                                                <div class="form-text">Format: 3 letters followed by 3 digits</div>
+                                            </div>
+                                            <div class="mb-3">
+                                                <label class="form-label font-semibold">Student Name (Optional)</label>
+                                                <input type="text" name="student_name" class="form-control" placeholder="Student Full Name">
+                                            </div>
+                                            <div class="mb-3">
+                                                <label class="form-label font-semibold">Department (Optional)</label>
+                                                <input type="text" name="department" class="form-control" placeholder="Department">
+                                            </div>
+                                        </div>
+                                        <div class="modal-footer">
+                                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                            <button type="submit" class="btn btn-success fw-bold">Add Record Now</button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    // Real-time table search
+    document.querySelectorAll('.table-search-input').forEach(input => {
+        input.addEventListener('input', function () {
+            const query = this.value.toLowerCase().trim();
+            const targetTableId = this.dataset.targetTable;
+            const table = document.getElementById(targetTableId);
+            if (!table) return;
+            const rows = table.querySelectorAll('tbody tr');
+            rows.forEach(row => {
+                const text = row.textContent.toLowerCase();
+                if (text.includes(query)) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+        });
+    });
+
+    const pastedText = document.getElementById('pastedText');
+    const previewBody = document.getElementById('previewBody');
+    const recordCountBadge = document.getElementById('recordCountBadge');
+    const clearBtn = document.getElementById('clearTextBtn');
+
+    const cnt8am = document.getElementById('cnt8am');
+    const cnt11am = document.getElementById('cnt11am');
+    const cnt2pm = document.getElementById('cnt2pm');
+    const cntHealed = document.getElementById('cntHealed');
+
+    const matHealRegex = /\bnou[A-Z0-9]{9}\b/i;
+    const courseHealRegex = /\b[A-Z]{3}\s*\d{3}\b|\b[A-Z]{3}\s*[0-9OISL]{3}\b/i;
+    const timeRegex = /\b(?:\d{4}-\d{2}-\d{2}\s+)?\d{1,2}(?::\d{2})?\s*[AP]M\b|\b\d{1,2}:\d{2}(?:\s*[AP]M)?\b/i;
+
+    function cleanseMat(raw) {
+        let u = raw.trim().toLowerCase();
+        if (!u.startsWith('nou')) {
+            let m = u.match(matHealRegex);
+            if (m) u = m[0].toLowerCase();
+        }
+        if (u.startsWith('nou')) {
+            let digits = u.slice(3).toUpperCase().replace(/O/g, '0').replace(/I/g, '1').replace(/L/g, '1').replace(/S/g, '5');
+            let healed = 'nou' + digits;
+            if (/^nou\d{9}$/.test(healed)) {
+                return { mat: healed, valid: true, corrected: healed !== raw.trim().toLowerCase() };
+            }
+        }
+        return { mat: u, valid: false, corrected: false };
+    }
+
+    function cleanseCourse(raw) {
+        let u = raw.trim().toUpperCase().replace(/\s+/g, '');
+        let m = u.match(/^([A-Z]{3})([A-Z0-9]{3})$/);
+        if (m) {
+            let digits = m[2].replace(/O/g, '0').replace(/I/g, '1').replace(/L/g, '1').replace(/S/g, '5');
+            let healed = m[1] + digits;
+            if (/^[A-Z]{3}\d{3}$/.test(healed)) {
+                return { course: healed, valid: true, corrected: healed !== raw.toUpperCase() };
+            }
+        }
+        return { course: u, valid: false, corrected: false };
+    }
+
+    function getSessionBucket(timeStr) {
+        if (!timeStr) return "8:00 AM";
+        let ts = timeStr.trim().toUpperCase().replace(/\s+/g, '');
+        let m = ts.match(/(\d{1,2})(?::(\d{2}))?(AM|PM)?/);
+        if (!m) return "8:00 AM";
+
+        let h = parseInt(m[1], 10);
+        let isPm = m[3] === "PM";
+        if (isPm && h < 12) h += 12;
+        if (!isPm && h === 12 && ts.includes("AM")) h = 0;
+
+        if (h < 11) return "8:00 AM";
+        else if (h >= 11 && h < 14) return "11:00 AM";
+        else return "2:00 PM";
+    }
+
+    function normalizeTime(timeStr) {
+        if (!timeStr) return "99:99";
+        let ts = timeStr.trim().toUpperCase().replace(/\s+/g, '');
+        let ampmMatch = ts.match(/^(\d{1,2})(?::(\d{2}))?(AM|PM)$/);
+        if (ampmMatch) {
+            let h = parseInt(ampmMatch[1], 10);
+            let m = ampmMatch[2] ? ampmMatch[2] : "00";
+            let isPm = ampmMatch[3] === "PM";
+            if (isPm && h < 12) h += 12;
+            if (!isPm && h === 12) h = 0;
+            return (h < 10 ? "0" + h : h) + ":" + m;
+        }
+        let m24 = ts.match(/^(\d{1,2}):(\d{2})$/);
+        if (m24) {
+            let h = parseInt(m24[1], 10);
+            return (h < 10 ? "0" + h : h) + ":" + m24[2];
+        }
+        return ts;
+    }
+
+    function updatePreview() {
+        if (!pastedText) return;
+        const text = pastedText.value.trim();
+        if (!text) {
+            previewBody.innerHTML = `
+                <tr>
+                    <td colspan="6" class="text-center py-4 text-muted">
+                        <i class="bi bi-arrow-up-circle fs-4 d-block mb-1"></i>
+                        Paste text into the chat box above to see real-time AI auto-arranged records.
+                    </td>
+                </tr>`;
+            recordCountBadge.textContent = "0 Records";
+            cnt8am.textContent = "0 Jobs";
+            cnt11am.textContent = "0 Jobs";
+            cnt2pm.textContent = "0 Jobs";
+            cntHealed.textContent = "0 Fixed";
+            return;
+        }
+
+        const lines = text.split('\n');
+        const parsedRecords = [];
+        let currentTimeStr = "";
+        let totalHealed = 0;
+
+        lines.forEach(line => {
+            const raw = line.trim();
+            if (!raw) return;
+
+            const matMatch = raw.match(matHealRegex);
+            const courseMatch = raw.match(courseHealRegex);
+            const timeMatch = raw.match(timeRegex);
+
+            if (timeMatch && !matMatch && !courseMatch) {
+                currentTimeStr = timeMatch[0].trim();
+                return;
+            }
+
+            if (matMatch && courseMatch) {
+                const cMat = cleanseMat(matMatch[0]);
+                const cCourse = cleanseCourse(courseMatch[0]);
+
+                if (cMat.valid && cCourse.valid) {
+                    const timeStr = timeMatch ? timeMatch[0].trim() : currentTimeStr;
+                    const bucket = getSessionBucket(timeStr);
+                    const wasCorrected = cMat.corrected || cCourse.corrected;
+                    if (wasCorrected) totalHealed++;
+
+                    let clean = raw.replace(matMatch[0], "").replace(courseMatch[0], "");
+                    if (timeMatch) clean = clean.replace(timeMatch[0], "");
+                    clean = clean.replace(/[|,\-:]+/g, " ").trim();
+
+                    parsedRecords.push({
+                        mat: cMat.mat,
+                        course: cCourse.course,
+                        timeStr: timeStr,
+                        bucket: bucket,
+                        corrected: wasCorrected,
+                        details: clean
+                    });
+                }
+            }
+        });
+
+        // Deduplicate records
+        const uniqueMap = new Map();
+        parsedRecords.forEach(r => {
+            const key = r.mat + "_" + r.course;
+            if (!uniqueMap.has(key)) {
+                uniqueMap.set(key, r);
+            }
+        });
+
+        const arr = Array.from(uniqueMap.values());
+
+        // Sort by Session Bucket -> Time -> Mat -> Course
+        arr.sort((a, b) => {
+            const tA = normalizeTime(a.timeStr);
+            const tB = normalizeTime(b.timeStr);
+            if (a.bucket !== b.bucket) return a.bucket.localeCompare(b.bucket);
+            if (tA !== tB) return tA.localeCompare(tB);
+            if (a.mat !== b.mat) return a.mat.localeCompare(b.mat);
+            return a.course.localeCompare(b.course);
+        });
+
+        let n8am = 0, n11am = 0, n2pm = 0;
+        arr.forEach(r => {
+            if (r.bucket === "8:00 AM") n8am++;
+            else if (r.bucket === "11:00 AM") n11am++;
+            else if (r.bucket === "2:00 PM") n2pm++;
+        });
+
+        recordCountBadge.textContent = `${arr.length} Valid Record(s)`;
+        cnt8am.textContent = `${n8am} Jobs`;
+        cnt11am.textContent = `${n11am} Jobs`;
+        cnt2pm.textContent = `${n2pm} Jobs`;
+        cntHealed.textContent = `${totalHealed} Fixed`;
+
+        if (arr.length === 0) {
+            previewBody.innerHTML = `
+                <tr>
+                    <td colspan="6" class="text-center py-4 text-warning">
+                        <i class="bi bi-exclamation-triangle fs-4 d-block mb-1"></i>
+                        No valid records recognized yet. Ensure format contains Matriculation No + Course Code.
+                    </td>
+                </tr>`;
+            return;
+        }
+
+        let html = '';
+        arr.forEach((r, idx) => {
+            let bucketBadge = '<span class="badge bg-primary">8:00 AM</span>';
+            if (r.bucket === "11:00 AM") bucketBadge = '<span class="badge bg-info text-dark">11:00 AM</span>';
+            if (r.bucket === "2:00 PM") bucketBadge = '<span class="badge bg-warning text-dark">2:00 PM</span>';
+
+            html += `
+                <tr>
+                    <td class="fw-bold text-muted">${idx + 1}</td>
+                    <td>${bucketBadge}</td>
+                    <td>
+                        ${r.timeStr ? `<span class="badge bg-light text-dark border"><i class="bi bi-clock me-1"></i>${r.timeStr}</span>` : `<span class="text-muted small">-</span>`}
+                    </td>
+                    <td><span class="font-monospace fw-bold text-primary">${r.mat}</span></td>
+                    <td><span class="badge bg-dark">${r.course}</span></td>
+                    <td class="small text-muted">
+                        ${r.corrected ? `<span class="badge bg-success-subtle text-success border border-success me-1"><i class="bi bi-magic me-1"></i>AI Fixed</span>` : ''}
+                        ${r.details || '<em class="opacity-50">Standard record</em>'}
+                    </td>
+                </tr>`;
+        });
+        previewBody.innerHTML = html;
+    }
+
+    pastedText.addEventListener('input', updatePreview);
+    clearBtn.addEventListener('click', function () {
+        pastedText.value = '';
+        updatePreview();
+    });
+
+    const mainForm = document.querySelector('form[action*="upload"]');
+    if (mainForm) {
+        mainForm.addEventListener('submit', function () {
+            const submitBtn = mainForm.querySelector('button[type="submit"]');
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status"></span> Importing and Saving Arranged Jobs...';
+            }
+        });
+    }
+});
+</script>
+{% endblock %}

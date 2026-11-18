@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+
+{% block title %}User Allocations Table - {{ user_target.username }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="fw-bold mb-1"><i class="bi bi-person-badge text-primary me-2"></i>Allocations for: <span class="text-dark">{{ user_target.username }}</span></h2>
+        <p class="text-muted mb-0">Email: {{ user_target.email }} | Role: {{ user_target.role.capitalize() }} | Status: {% if user_target.active %}Active{% else %}Suspended{% endif %}</p>
+    </div>
+    <div>
+        <a href="{{ url_for('admin_users') }}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-1"></i> Back to Users
+        </a>
+    </div>
+</div>
+
+<div class="card card-custom p-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h5 class="fw-bold mb-0"><i class="bi bi-table text-primary me-2"></i>Allocated Jobs List (Table View)</h5>
+        <span class="badge bg-primary px-3 py-2">Total Records: {{ rows|length }}</span>
+    </div>
+
+    <!-- Scrolling Table Container -->
+    <div class="table-responsive" style="max-height: 600px; overflow-y: auto;">
+        <table class="table table-hover table-custom align-middle mb-0">
+            <thead class="table-light sticky-top">
+                <tr>
+                    <th>#ID</th>
+                    <th>Session Name</th>
+                    <th>Matriculation No</th>
+                    <th>Course Code</th>
+                    <th>Student / Dept</th>
+                    <th>Allocation Status</th>
+                    <th>Type</th>
+                    <th>Score</th>
+                    <th>Timestamps</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in rows %}
+                    <tr>
+                        <td class="fw-bold text-muted">#{{ r.id }}</td>
+                        <td><span class="badge bg-dark">{{ r.session_name }}</span></td>
+                        <td><span class="font-monospace fw-bold text-primary">{{ r.mat_no }}</span></td>
+                        <td><span class="badge bg-secondary">{{ r.course_code }}</span></td>
+                        <td class="small">
+                            {% if r.student_name %}
+                                <div class="fw-semibold text-dark">{{ r.student_name }}</div>
+                            {% endif %}
+                            {% if r.department %}
+                                <div class="text-muted">{{ r.department }}</div>
+                            {% endif %}
+                            {% if not r.student_name and not r.department %}
+                                <span class="text-muted opacity-50">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span class="badge badge-{{ r.status }} px-2 py-1">{{ r.status.upper() }}</span>
+                            {% if r.status == 'started' and r.timer_started_at %}
+                                <div class="admin-timer mt-1 small text-info fw-bold" data-timer-start="{{ r.timer_started_at }}">
+                                    <i class="bi bi-clock me-1"></i> <span class="admin-countdown">...</span>
+                                </div>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if r.manual %}
+                                <span class="badge bg-warning text-dark">Manual</span>
+                            {% else %}
+                                <span class="badge bg-info text-dark">Auto</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if r.score is not none %}
+                                <span class="fw-bold text-success">{{ r.score }}%</span>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td class="small text-muted" style="font-size: 0.8rem;">
+                            <div>Allocated: {{ r.created_at }}</div>
+                            {% if r.started_at %}
+                                <div>Started: {{ r.started_at }}</div>
+                            {% endif %}
+                            {% if r.finished_at %}
+                                <div>Finished: {{ r.finished_at }}</div>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% else %}
+                    <tr>
+                        <td colspan="9" class="text-center py-5 text-muted">
+                            <i class="bi bi-journal-x fs-3 d-block mb-2"></i>
+                            No jobs currently allocated to this user.
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const totalSeconds = 3600;
+    document.querySelectorAll('.admin-timer').forEach(el => {
+        const startStr = el.dataset.timerStart;
+        if (!startStr) return;
+        const startTime = new Date(startStr.replace(/-/g, '/')).getTime();
+        const countdownSpan = el.querySelector('.admin-countdown');
+
+        function updateAdminTimer() {
+            const now = new Date().getTime();
+            const elapsedSecs = Math.floor((now - startTime) / 1000);
+            const remainingSecs = totalSeconds - elapsedSecs;
+
+            if (remainingSecs <= 0) {
+                countdownSpan.textContent = "00:00 (Expired)";
+                return;
+            }
+
+            const mins = Math.floor(remainingSecs / 60);
+            const secs = remainingSecs % 60;
+            countdownSpan.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+        }
+
+        updateAdminTimer();
+        setInterval(updateAdminTimer, 1000);
+    });
+});
+</script>
+{% endblock %}

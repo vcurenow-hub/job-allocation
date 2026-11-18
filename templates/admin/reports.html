@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block title %}User Reports{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="fw-bold mb-1"><i class="bi bi-flag text-danger me-2"></i>User Reported Issues</h2>
+        <p class="text-muted mb-0">Review reported malfunctioning jobs, unregistered courses, or invalid matriculation numbers.</p>
+    </div>
+</div>
+
+<div class="card card-custom">
+    <div class="table-responsive">
+        <table class="table table-hover table-custom align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>User</th>
+                    <th>Session</th>
+                    <th>Mat / Course</th>
+                    <th>Reason</th>
+                    <th>Explanation</th>
+                    <th>Replacement</th>
+                    <th>Status</th>
+                    <th class="text-end">Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in reports %}
+                    <tr>
+                        <td class="fw-bold text-muted">#{{ r.id }}</td>
+                        <td class="fw-semibold text-dark">{{ r.username }}</td>
+                        <td>{{ r.session_name }}</td>
+                        <td>
+                            <div><span class="font-monospace text-primary">{{ r.mat_no }}</span></div>
+                            <div><span class="badge bg-dark">{{ r.course_code }}</span></div>
+                        </td>
+                        <td>
+                            <span class="badge bg-danger">{{ r.reason }}</span>
+                        </td>
+                        <td style="max-width: 220px;" class="small text-muted">{{ r.explanation }}</td>
+                        <td>
+                            {% if r.replacement_allocation_id %}
+                                <span class="badge bg-success">#{{ r.replacement_allocation_id }}</span>
+                            {% else %}
+                                <span class="text-muted">None</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if r.status == 'open' %}
+                                <span class="badge bg-warning text-dark px-2 py-1"><i class="bi bi-exclamation-circle me-1"></i>Open</span>
+                            {% else %}
+                                <span class="badge bg-secondary px-2 py-1"><i class="bi bi-check-circle me-1"></i>Resolved</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end">
+                            {% if r.status == 'open' %}
+                                <form method="post" action="{{ url_for('resolve_report', rid=r.id) }}">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button type="submit" class="btn btn-sm btn-outline-success">
+                                        <i class="bi bi-check-lg me-1"></i> Resolve
+                                    </button>
+                                </form>
+                            {% else %}
+                                <small class="text-muted"><i class="bi bi-check-all"></i> Done</small>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% else %}
+                    <tr>
+                        <td colspan="9" class="text-center py-4 text-muted">No reports submitted yet.</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

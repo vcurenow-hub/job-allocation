@@ -1,0 +1,385 @@
+{% extends "base.html" %}
+
+{% block title %}Session Tables & Real-Time Allocation Control{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+            <div>
+                <h2 class="fw-bold mb-1"><i class="bi bi-grid-3x3-gap-fill text-primary me-2"></i>Session Tables & Allocation Control</h2>
+                <p class="text-muted mb-0">Color coding: <span class="badge bg-danger">Red = Unattended</span>, <span class="badge bg-warning text-dark">Yellow = In Progress</span>, <span class="badge bg-success">Green = Finished</span>.</p>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+                <form method="post" action="{{ url_for('admin_clear_all_records') }}" onsubmit="return confirm('DANGER: Delete ALL uploaded records and history across ALL sessions? This cannot be undone!');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-danger btn-sm fw-bold px-3">
+                        <i class="bi bi-trash-fill me-1"></i> Delete All Uploaded Records (All Sessions)
+                    </button>
+                </form>
+                <a href="{{ url_for('admin_dashboard') }}" class="btn btn-outline-secondary btn-sm">
+                    <i class="bi bi-arrow-left me-1"></i> Admin Panel
+                </a>
+            </div>
+        </div>
+
+        <!-- Session Tabs Header -->
+        <ul class="nav nav-pills mb-4 nav-justified" id="sessionTableTabs" role="tablist">
+            {% for data in session_data %}
+                {% set s = data.session %}
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link fw-bold py-3 {% if loop.first %}active{% endif %}" id="tab-{{ s.id }}" data-bs-toggle="pill" data-bs-target="#pane-{{ s.id }}" type="button" role="tab">
+                        <i class="bi bi-clock-fill me-2"></i>{{ s.name }} Table
+                        <span class="badge {% if s.is_open %}bg-success{% else %}bg-secondary{% endif %} ms-2">
+                            {% if s.is_open %}OPEN{% else %}CLOSED{% endif %}
+                        </span>
+                        <span class="badge bg-light text-dark ms-1">({{ data.rows|length }} Jobs)</span>
+                    </button>
+                </li>
+            {% endfor %}
+        </ul>
+
+        <!-- Session Tab Contents -->
+        <div class="tab-content" id="sessionTableContent">
+            {% for data in session_data %}
+                {% set s = data.session %}
+                <div class="tab-pane fade {% if loop.first %}show active{% endif %}" id="pane-{{ s.id }}" role="tabpanel">
+                    <div class="card card-custom p-4 mb-4">
+                        <div class="d-flex justify-content-between align-items-center border-bottom pb-3 mb-4 flex-wrap gap-2">
+                            <div>
+                                <h4 class="fw-bold mb-1">
+                                    <i class="bi bi-table text-primary me-2"></i>{{ s.name }} Session Table
+                                    {% if s.is_open %}
+                                        <span class="badge bg-success ms-2 fs-6">🟢 ALLOCATIONS ACTIVE</span>
+                                    {% else %}
+                                        <span class="badge bg-danger ms-2 fs-6">🔴 ALLOCATIONS STOPPED (CLOSED)</span>
+                                    {% endif %}
+                                </h4>
+                            </div>
+                            <div class="d-flex gap-2 flex-wrap">
+                                <!-- Add Record Button -->
+                                <button type="button" class="btn btn-primary btn-sm fw-bold px-3" data-bs-toggle="modal" data-bs-target="#addJobModal{{ s.id }}">
+                                    <i class="bi bi-plus-circle me-1"></i> Add Record
+                                </button>
+
+                                <!-- Clear Entire Section Button -->
+                                <form method="post" action="{{ url_for('admin_clear_session', sid=s.id) }}" onsubmit="return confirm('Clear ALL records in {{ s.name }} section?');">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm fw-bold px-3">
+                                        <i class="bi bi-trash3 me-1"></i> Clear Section
+                                    </button>
+                                </form>
+
+                                {% if s.is_open %}
+                                    <form method="post" action="{{ url_for('close_session', sid=s.id) }}" onsubmit="return confirm('Close {{ s.name }} session table?');">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="btn btn-danger btn-sm fw-bold px-3">
+                                            <i class="bi bi-lock-fill me-2"></i> Close Table
+                                        </button>
+                                    </form>
+                                {% else %}
+                                    <form method="post" action="{{ url_for('open_session', sid=s.id) }}" onsubmit="return confirm('Open {{ s.name }} session table?');">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="btn btn-success btn-sm fw-bold px-3">
+                                            <i class="bi bi-unlock-fill me-2"></i> Open Table
+                                        </button>
+                                    </form>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <!-- Table Search Bar -->
+                        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+                            <h5 class="fw-bold mb-0 text-dark"><i class="bi bi-search me-2 text-primary"></i>Search {{ s.name }} Table</h5>
+                            <div style="width: 320px;">
+                                <input type="text" class="form-control table-search-input" data-target-table="sessionTable-{{ s.id }}" placeholder="Search mat no, course, user...">
+                            </div>
+                        </div>
+
+                        <!-- Scrolling Table for this Session -->
+                        <div class="table-responsive" style="max-height: 550px; overflow-y: auto;">
+                            <table class="table table-hover table-custom align-middle mb-0" id="sessionTable-{{ s.id }}">
+                                <thead class="table-light sticky-top">
+                                    <tr>
+                                        <th>#ID</th>
+                                        <th>Matriculation No</th>
+                                        <th>Course Code</th>
+                                        <th>Student / Dept</th>
+                                        <th>Job Status</th>
+                                        <th>Assigned User</th>
+                                        <th>Allocation Status</th>
+                                        <th>Score</th>
+                                        <th class="text-end">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for r in data.rows %}
+                                        {% set row_cls = '' %}
+                                        {% if not r.assigned_user or r.status == 'available' %}
+                                            {% set row_cls = 'table-danger' %}
+                                        {% elif r.allocation_status in ['allocated', 'shown', 'started'] %}
+                                            {% set row_cls = 'table-warning' %}
+                                        {% elif r.allocation_status in ['finished', 'scored'] or r.score is not none %}
+                                            {% set row_cls = 'table-success' %}
+                                        {% endif %}
+                                        <tr class="{{ row_cls }}">
+                                            <td class="fw-bold text-muted">#{{ r.id }}</td>
+                                            <td>
+                                                {% if r.is_priority %}
+                                                    <div class="badge bg-warning text-dark fw-bold mb-1"><i class="bi bi-star-fill me-1"></i>PRIORITY</div>
+                                                {% endif %}
+                                                <span class="font-monospace fw-bold text-primary fs-6">{{ r.mat_no }}</span>
+                                            </td>
+                                            <td><span class="badge bg-secondary fs-6">{{ r.course_code }}</span></td>
+                                            <td class="small">
+                                                {% if r.student_name %}
+                                                    <div class="fw-semibold text-dark">{{ r.student_name }}</div>
+                                                {% endif %}
+                                                {% if r.department %}
+                                                    <div class="text-muted">{{ r.department }}</div>
+                                                {% endif %}
+                                                {% if not r.student_name and not r.department %}
+                                                    <span class="text-muted opacity-50">-</span>
+                                                {% endif %}
+                                                {% if r.multi_count and r.multi_count > 1 %}
+                                                    <div class="badge bg-warning text-dark mt-1">💻 Same Computer ({{ r.multi_count }})</div>
+                                                {% endif %}
+                                            </td>
+                                            <td>
+                                                {% if r.status == 'available' %}
+                                                    <span class="badge bg-success">Available</span>
+                                                {% elif r.status == 'assigned' %}
+                                                    <span class="badge bg-primary">Assigned</span>
+                                                {% elif r.status == 'review' %}
+                                                    <span class="badge bg-danger">Under Review</span>
+                                                {% else %}
+                                                    <span class="badge bg-secondary">{{ r.status }}</span>
+                                                {% endif %}
+                                            </td>
+                                            <td>
+                                                {% if r.assigned_user %}
+                                                    <span class="badge bg-info text-dark fw-bold"><i class="bi bi-person-fill me-1"></i>{{ r.assigned_user }}</span>
+                                                    {% if r.manual %}
+                                                        <div class="small text-warning fw-semibold mt-1">Manual</div>
+                                                    {% endif %}
+                                                {% else %}
+                                                    <span class="text-muted small italic">Unassigned</span>
+                                                {% endif %}
+                                            </td>
+                                            <td>
+                                                {% if r.allocation_status %}
+                                                    <span class="badge badge-{{ r.allocation_status }} px-2 py-1">{{ r.allocation_status.upper() }}</span>
+                                                    {% if r.allocation_status == 'started' and r.timer_started_at %}
+                                                        <div class="admin-timer mt-1 small text-info fw-bold" data-timer-start="{{ r.timer_started_at }}">
+                                                            <i class="bi bi-clock me-1"></i> <span class="admin-countdown">...</span>
+                                                        </div>
+                                                    {% endif %}
+                                                {% else %}
+                                                    <span class="text-muted small">-</span>
+                                                {% endif %}
+                                            </td>
+                                            <td>
+                                                {% if r.score is not none %}
+                                                    <span class="fw-bold text-success">{{ r.score }}%</span>
+                                                {% else %}
+                                                    <span class="text-muted">-</span>
+                                                {% endif %}
+                                            </td>
+                                            <td class="text-end">
+                                                <div class="dropdown">
+                                                    <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                                                        Actions
+                                                    </button>
+                                                    <ul class="dropdown-menu dropdown-menu-end shadow">
+                                                        <li>
+                                                            <form method="post" action="{{ url_for('admin_toggle_priority', job_id=r.id) }}">
+                                                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                                <button type="submit" class="dropdown-item {% if r.is_priority %}text-secondary{% else %}text-warning fw-bold{% endif %}">
+                                                                    {% if r.is_priority %}<i class="bi bi-star me-2"></i>Unmark Priority{% else %}<i class="bi bi-star-fill me-2"></i>⭐ Mark as Priority{% endif %}
+                                                                </button>
+                                                            </form>
+                                                        </li>
+                                                        <li><hr class="dropdown-divider"></li>
+                                                        <li>
+                                                            <button type="button" class="dropdown-item text-dark" data-bs-toggle="modal" data-bs-target="#editJobModal{{ r.id }}">
+                                                                <i class="bi bi-pencil-square me-2"></i> Edit Record
+                                                            </button>
+                                                        </li>
+                                                        {% if r.allocation_id and r.assigned_user %}
+                                                            <li>
+                                                                <form method="post" action="{{ url_for('admin_remove_and_replace', allocation_id=r.allocation_id) }}" onsubmit="return confirm('Remove and auto-reassign?');">
+                                                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                                    <button type="submit" class="dropdown-item text-primary">
+                                                                        <i class="bi bi-arrow-repeat me-2"></i> Remove & Auto-Reassign
+                                                                    </button>
+                                                                </form>
+                                                            </li>
+                                                            <li>
+                                                                <form method="post" action="{{ url_for('admin_remove_no_action', allocation_id=r.allocation_id) }}" onsubmit="return confirm('Unassign and release slot?');">
+                                                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                                    <button type="submit" class="dropdown-item text-warning">
+                                                                        <i class="bi bi-unlock me-2"></i> Remove & Release Slot
+                                                                    </button>
+                                                                </form>
+                                                            </li>
+                                                            <li><hr class="dropdown-divider"></li>
+                                                        {% endif %}
+                                                        <li>
+                                                            <form method="post" action="{{ url_for('admin_delete_job', job_id=r.id) }}" onsubmit="return confirm('Delete job entirely?');">
+                                                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                                <button type="submit" class="dropdown-item text-danger">
+                                                                    <i class="bi bi-trash me-2"></i> Delete Job Entirely
+                                                                </button>
+                                                            </form>
+                                                        </li>
+                                                    </ul>
+                                                </div>
+                                            </td>
+                                        </tr>
+
+                                        <!-- Edit Record Modal for Row {{ r.id }} -->
+                                        <div class="modal fade" id="editJobModal{{ r.id }}" tabindex="-1" aria-hidden="true">
+                                            <div class="modal-dialog">
+                                                <div class="modal-content">
+                                                    <form method="post" action="{{ url_for('admin_edit_job', job_id=r.id) }}">
+                                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                        <div class="modal-header bg-dark text-white">
+                                                            <h5 class="modal-title fw-bold">Edit Record #{{ r.id }}</h5>
+                                                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                                                        </div>
+                                                        <div class="modal-body text-start">
+                                                            <div class="mb-3">
+                                                                <label class="form-label font-semibold">Matriculation Number</label>
+                                                                <input type="text" name="mat_no" class="form-control" value="{{ r.mat_no }}" pattern="nou[0-9]{9}" required>
+                                                                <div class="form-text">Format: nou followed by 9 digits</div>
+                                                            </div>
+                                                            <div class="mb-3">
+                                                                <label class="form-label font-semibold">Course Code</label>
+                                                                <input type="text" name="course_code" class="form-control" value="{{ r.course_code }}" pattern="[A-Za-z]{3}[0-9]{3}" required>
+                                                                <div class="form-text">Format: 3 letters followed by 3 digits (e.g. GST101)</div>
+                                                            </div>
+                                                            <div class="mb-3">
+                                                                <label class="form-label font-semibold">Student Name</label>
+                                                                <input type="text" name="student_name" class="form-control" value="{{ r.student_name or '' }}">
+                                                            </div>
+                                                            <div class="mb-3">
+                                                                <label class="form-label font-semibold">Department</label>
+                                                                <input type="text" name="department" class="form-control" value="{{ r.department or '' }}">
+                                                            </div>
+                                                        </div>
+                                                        <div class="modal-footer">
+                                                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                                            <button type="submit" class="btn btn-primary fw-bold">Save Changes</button>
+                                                        </div>
+                                                    </form>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    {% else %}
+                                        <tr>
+                                            <td colspan="9" class="text-center py-5 text-muted">
+                                                <i class="bi bi-journal-x fs-3 d-block mb-2"></i>
+                                                No records uploaded for {{ s.name }} table yet.
+                                            </td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Add Record Modal for Session {{ s.id }} -->
+                    <div class="modal fade" id="addJobModal{{ s.id }}" tabindex="-1" aria-hidden="true">
+                        <div class="modal-dialog">
+                            <div class="modal-content">
+                                <form method="post" action="{{ url_for('admin_add_job', sid=s.id) }}">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <div class="modal-header bg-primary text-white">
+                                        <h5 class="modal-title fw-bold">Add Record to {{ s.name }} Table</h5>
+                                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                                    </div>
+                                    <div class="modal-body text-start">
+                                        <div class="mb-3">
+                                            <label class="form-label font-semibold">Matriculation Number</label>
+                                            <input type="text" name="mat_no" class="form-control" placeholder="nou123456789" pattern="nou[0-9]{9}" required>
+                                            <div class="form-text">Format: nou followed by 9 digits</div>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label font-semibold">Course Code</label>
+                                            <input type="text" name="course_code" class="form-control" placeholder="GST101" pattern="[A-Za-z]{3}[0-9]{3}" required>
+                                            <div class="form-text">Format: 3 letters followed by 3 digits</div>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label font-semibold">Student Name (Optional)</label>
+                                            <input type="text" name="student_name" class="form-control" placeholder="Student Full Name">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label font-semibold">Department (Optional)</label>
+                                            <input type="text" name="department" class="form-control" placeholder="Department">
+                                        </div>
+                                    </div>
+                                    <div class="modal-footer">
+                                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                        <button type="submit" class="btn btn-success fw-bold">Add Record Now</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('.table-search-input').forEach(input => {
+        input.addEventListener('input', function () {
+            const query = this.value.toLowerCase().trim();
+            const targetTableId = this.dataset.targetTable;
+            const table = document.getElementById(targetTableId);
+            if (!table) return;
+            const rows = table.querySelectorAll('tbody tr');
+            rows.forEach(row => {
+                const text = row.textContent.toLowerCase();
+                if (text.includes(query)) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+        });
+    });
+
+    const totalSeconds = 3600;
+    document.querySelectorAll('.admin-timer').forEach(el => {
+        const startStr = el.dataset.timerStart;
+        if (!startStr) return;
+        const startTime = new Date(startStr.replace(/-/g, '/')).getTime();
+        const countdownSpan = el.querySelector('.admin-countdown');
+
+        function updateAdminTimer() {
+            const now = new Date().getTime();
+            const elapsedSecs = Math.floor((now - startTime) / 1000);
+            const remainingSecs = totalSeconds - elapsedSecs;
+
+            if (remainingSecs <= 0) {
+                countdownSpan.textContent = "00:00 (Expired)";
+                return;
+            }
+
+            const mins = Math.floor(remainingSecs / 60);
+            const secs = remainingSecs % 60;
+            countdownSpan.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+        }
+
+        updateAdminTimer();
+        setInterval(updateAdminTimer, 1000);
+    });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}Audit Logs{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="fw-bold mb-1"><i class="bi bi-clock-history text-primary me-2"></i>System Audit Log</h2>
+        <p class="text-muted mb-0">Track administrator actions, session state changes, manual allocations, and record uploads.</p>
+    </div>
+</div>
+
+<div class="card card-custom">
+    <div class="table-responsive">
+        <table class="table table-hover table-custom align-middle mb-0">
+            <thead>
+                <tr>
+                    <th style="width: 70px;">ID</th>
+                    <th>Administrator</th>
+                    <th>Action</th>
+                    <th>Details</th>
+                    <th>Timestamp</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in logs %}
+                    <tr>
+                        <td class="fw-bold text-muted">#{{ log.id }}</td>
+                        <td>
+                            <span class="fw-semibold text-dark">
+                                <i class="bi bi-person-badge me-1 text-primary"></i> {{ log.admin_username or 'System' }}
+                            </span>
+                        </td>
+                        <td>
+                            <span class="badge bg-secondary font-monospace">{{ log.action }}</span>
+                        </td>
+                        <td class="small text-muted">{{ log.details }}</td>
+                        <td class="small"><i class="bi bi-calendar3 me-1"></i>{{ log.created_at }}</td>
+                    </tr>
+                {% else %}
+                    <tr>
+                        <td colspan="5" class="text-center py-4 text-muted">No audit log entries recorded yet.</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

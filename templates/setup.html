@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}Initial Setup{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center my-5">
+    <div class="col-md-6 col-lg-5">
+        <div class="card card-custom p-4">
+            <div class="text-center mb-4">
+                <div class="bg-danger text-white rounded-circle d-inline-flex align-items-center justify-content-center mb-3" style="width: 60px; height: 60px;">
+                    <i class="bi bi-shield-check fs-2"></i>
+                </div>
+                <h4 class="fw-bold">Administrator Setup</h4>
+                <p class="text-muted small">Create the initial system administrator account</p>
+            </div>
+
+            {% if disabled %}
+                <div class="alert alert-warning text-center">
+                    <i class="bi bi-exclamation-triangle me-2"></i> Initial admin account already exists. Setup is disabled.
+                </div>
+                <div class="text-center mt-3">
+                    <a href="{{ url_for('login') }}" class="btn btn-primary">Go to Login</a>
+                </div>
+            {% else %}
+                <form method="post" action="{{ url_for('setup') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <div class="mb-3">
+                        <label class="form-label font-semibold">Admin Username</label>
+                        <input type="text" name="username" class="form-control" placeholder="Admin username" required autofocus>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label font-semibold">Admin Email</label>
+                        <input type="email" name="email" class="form-control" placeholder="admin@example.com" required>
+                    </div>
+                    <div class="mb-4">
+                        <label class="form-label font-semibold">Admin Password</label>
+                        <input type="password" name="password" class="form-control" placeholder="Minimum 12 characters" minlength="12" required>
+                        <div class="form-text">Must be at least 12 characters long.</div>
+                    </div>
+                    <button type="submit" class="btn btn-danger w-100 py-2 fw-semibold">
+                        <i class="bi bi-shield-plus me-1"></i> Create Administrator
+                    </button>
+                </form>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

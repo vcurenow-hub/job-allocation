@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+
+{% block title %}Allocations Overview & Quantity Assignment{% endblock %}
+
+{% block content %}
+<div class="row g-4 mb-4">
+    <!-- Manual & Bulk Allocation Card -->
+    <div class="col-lg-4">
+        <div class="card card-custom h-100 p-4">
+            <h4 class="fw-bold mb-3"><i class="bi bi-person-plus text-primary me-2"></i>Job Allocation Control</h4>
+            <p class="text-muted small mb-3">Directly assign specific jobs or bulk allocate quantities to any approved user at any time.</p>
+
+            <!-- Tabs for Single vs Bulk Allocation -->
+            <ul class="nav nav-pills mb-3 nav-justified" id="allocTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active fw-bold py-2" id="single-tab" data-bs-toggle="tab" data-bs-target="#single-pane" type="button" role="tab">Single Job</button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link fw-bold py-2" id="bulk-tab" data-bs-toggle="tab" data-bs-target="#bulk-pane" type="button" role="tab">Bulk Quantity</button>
+                </li>
+            </ul>
+
+            <div class="tab-content" id="allocTabsContent">
+                <!-- SINGLE PANE -->
+                <div class="tab-pane fade show active" id="single-pane" role="tabpanel">
+                    <form method="post" action="{{ url_for('admin_allocations') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                        <div class="mb-3">
+                            <label class="form-label font-semibold">Assign to User</label>
+                            <select name="user_id" class="form-select" required>
+                                <option value="">Select user...</option>
+                                {% for u in users %}
+                                    <option value="{{ u.id }}">{{ u.username }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label font-semibold">Open Session</label>
+                            <select name="session_id" class="form-select" required>
+                                <option value="">Select open session...</option>
+                                {% for s in sessions %}
+                                    <option value="{{ s.id }}">{{ s.name }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label font-semibold">Matriculation Number</label>
+                            <input type="text" name="mat_no" class="form-control" placeholder="nou123456789" pattern="nou[0-9]{9}" required>
+                            <div class="form-text">Format: nou followed by 9 digits</div>
+                        </div>
+
+                        <div class="mb-4">
+                            <label class="form-label font-semibold">Course Code</label>
+                            <input type="text" name="course_code" class="form-control" placeholder="ABC123" pattern="[A-Za-z]{3}[0-9]{3}" required>
+                            <div class="form-text">Format: 3 letters followed by 3 digits</div>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary w-100 py-2 fw-bold">
+                            <i class="bi bi-send-check me-1"></i> Assign Single Job Now
+                        </button>
+                    </form>
+                </div>
+
+                <!-- BULK / QUANTITY PANE -->
+                <div class="tab-pane fade" id="bulk-pane" role="tabpanel">
+                    <form method="post" action="{{ url_for('admin_bulk_allocate') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                        <div class="mb-3">
+                            <label class="form-label font-semibold">Assign to User</label>
+                            <select name="user_id" class="form-select" required>
+                                <option value="">Select user...</option>
+                                {% for u in users %}
+                                    <option value="{{ u.id }}">{{ u.username }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label font-semibold">Open Session</label>
+                            <select name="session_id" class="form-select" required>
+                                <option value="">Select open session...</option>
+                                {% for s in sessions %}
+                                    <option value="{{ s.id }}">{{ s.name }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+
+                        <div class="mb-4">
+                            <label class="form-label font-semibold">Allocation Quantity (Number of Jobs)</label>
+                            <input type="number" name="quantity" class="form-control" min="1" max="100" value="5" required>
+                            <div class="form-text">Specify how many available jobs to instantly allocate to this user (1 to 100).</div>
+                        </div>
+
+                        <button type="submit" class="btn btn-success w-100 py-2 fw-bold">
+                            <i class="bi bi-lightning-charge-fill me-1"></i> Bulk Allocate Jobs Now
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Allocation History & Job Pool Table with Filter Dropdown -->
+    <div class="col-lg-8">
+        <div class="card card-custom h-100 p-4">
+            <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+                <h5 class="mb-0 fw-bold"><i class="bi bi-clock-history me-2 text-primary"></i>Allocation History & Job Pool</h5>
+                <div class="d-flex gap-2 align-items-center">
+                    <label class="form-label small mb-0 fw-bold text-muted">Filter View:</label>
+                    <select id="allocationFilter" class="form-select form-select-sm fw-bold text-primary" style="width: 170px;">
+                        <option value="all">🌐 All Records</option>
+                        <option value="allocated">🔵 Allocated (Active)</option>
+                        <option value="yet-to-allocate">🔴 Yet to Allocate</option>
+                        <option value="finished">🟢 Finished / Completed</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Scrolling Table Container -->
+            <div class="table-responsive" style="max-height: 550px; overflow-y: auto;">
+                <table class="table table-hover table-custom align-middle mb-0" id="allocationsTable">
+                    <thead class="table-light sticky-top">
+                        <tr>
+                            <th>#ID</th>
+                            <th>Session</th>
+                            <th>User / Status</th>
+                            <th>Record (Mat No & Course)</th>
+                            <th>Type</th>
+                            <th>Score</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Allocated / History Rows -->
+                        {% for a in rows %}
+                            {% set cat = 'allocated' %}
+                            {% if a.status in ['finished', 'scored'] or a.score is not none %}
+                                {% set cat = 'finished' %}
+                            {% endif %}
+                            <tr class="alloc-row" data-category="{{ cat }}">
+                                <td class="fw-bold text-muted">#{{ a.id }}</td>
+                                <td>{{ a.session_name }}</td>
+                                <td>
+                                    <div class="fw-semibold text-dark"><i class="bi bi-person me-1"></i>{{ a.username }}</div>
+                                    <span class="badge badge-{{ a.status }} px-2 py-1 mt-1">{{ a.status.upper() }}</span>
+                                </td>
+                                <td>
+                                    <div><span class="font-monospace text-primary fw-bold">{{ a.mat_no }}</span></div>
+                                    <div><span class="badge bg-secondary">{{ a.course_code }}</span></div>
+                                </td>
+                                <td>
+                                    {% if a.manual %}
+                                        <span class="badge bg-warning text-dark">Manual</span>
+                                    {% else %}
+                                        <span class="badge bg-info text-dark">Auto</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ a.score if a.score is not none else '-' }}</td>
+                            </tr>
+                        {% endfor %}
+
+                        <!-- Yet to Allocate Rows (Available Jobs) -->
+                        {% for j in unallocated_jobs %}
+                            <tr class="alloc-row table-danger" data-category="yet-to-allocate">
+                                <td class="fw-bold text-muted">J#{{ j.id }}</td>
+                                <td>{{ j.session_name }}</td>
+                                <td>
+                                    <span class="badge bg-danger px-2 py-1">YET TO ALLOCATE</span>
+                                </td>
+                                <td>
+                                    <div><span class="font-monospace text-primary fw-bold">{{ j.mat_no }}</span></div>
+                                    <div><span class="badge bg-dark">{{ j.course_code }}</span></div>
+                                    {% if j.student_name %}<div class="small text-muted">{{ j.student_name }}</div>{% endif %}
+                                </td>
+                                <td>
+                                    <span class="badge bg-secondary">Pool Job</span>
+                                </td>
+                                <td>-</td>
+                            </tr>
+                        {% endfor %}
+
+                        {% if not rows and not unallocated_jobs %}
+                            <tr>
+                                <td colspan="6" class="text-center py-4 text-muted">No records found.</td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const filterSelect = document.getElementById('allocationFilter');
+    const rows = document.querySelectorAll('.alloc-row');
+
+    if (filterSelect) {
+        filterSelect.addEventListener('change', function () {
+            const selectedCat = this.value;
+            rows.forEach(row => {
+                const rowCat = row.dataset.category;
+                if (selectedCat === 'all' || rowCat === selectedCat) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+        });
+    }
+});
+</script>
+{% endblock %}
