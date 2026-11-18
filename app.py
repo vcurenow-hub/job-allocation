@@ -1031,48 +1031,30 @@ def show_allocation(allocation_id):
         flash("This job cannot be shown in its current state.", "warning")
         return redirect(url_for("dashboard"))
 
+    # Sequential opening check: user must open earlier allocated jobs first in order
+    earlier_unopened = con.execute("""
+        SELECT a.id FROM allocations a
+        JOIN jobs j ON j.id = a.job_id
+        WHERE a.user_id = ? AND j.session_id = ? AND a.status = 'allocated' AND a.id < ?
+        ORDER BY a.id ASC LIMIT 1
+    """, (user["id"], row["session_id"], allocation_id)).fetchone()
+
+    if earlier_unopened:
+        flash("You must open and input the IP address for your earlier allocated job(s) first in sequence.", "warning")
+        return redirect(url_for("dashboard"))
+
     ip_address = request.form.get("ip_address", "").strip()
     if not ip_address:
         flash("Please enter the Computer IP Address to open this job.", "danger")
         return redirect(url_for("dashboard"))
 
+    # Once IP is input and work viewed, start the timer immediately (status='started')
     con.execute("""
-        UPDATE allocations SET status='shown', shown_at=?, ip_address=?
+        UPDATE allocations SET status='started', shown_at=?, started_at=?, timer_started_at=?, ip_address=?
         WHERE id=? AND user_id=? AND status='allocated'
-    """, (now(), ip_address, allocation_id, user["id"]))
+    """, (now(), now(), now(), ip_address, allocation_id, user["id"]))
     con.commit()
-    flash("Job opened successfully. Please review details and press START.", "success")
-    return redirect(url_for("dashboard"))
-
-
-@app.route("/allocation/<int:allocation_id>/start", methods=["POST"])
-@login_required
-def start_allocation(allocation_id):
-    user = current_user()
-    con = get_db()
-    row = get_owned_allocation(con, allocation_id, user["id"])
-
-    if row["status"] != "shown":
-        flash("Show the job and enter IP before starting it.", "warning")
-        return redirect(url_for("dashboard"))
-
-    # Sequential enforcement: check if user has another started job
-    active_started = con.execute("""
-        SELECT a.id FROM allocations a
-        JOIN jobs j ON j.id = a.job_id
-        WHERE a.user_id = ? AND j.session_id = ? AND a.status = 'started' AND a.id != ?
-    """, (user["id"], row["session_id"], allocation_id)).fetchone()
-
-    if active_started:
-        flash("You must submit your current active started job before starting another item.", "warning")
-        return redirect(url_for("dashboard"))
-
-    con.execute("""
-        UPDATE allocations SET status='started', started_at=?, timer_started_at=?
-        WHERE id=? AND user_id=? AND status='shown'
-    """, (now(), now(), allocation_id, user["id"]))
-    con.commit()
-    flash("Job started! 1-hour timer is counting down.", "success")
+    flash("Job opened and timer started! 1-hour countdown is active.", "success")
     return redirect(url_for("dashboard"))
 
 
@@ -1084,15 +1066,15 @@ def submit_allocation(allocation_id):
     row = get_owned_allocation(con, allocation_id, user["id"])
 
     if row["status"] != "started":
-        flash("Only a started job can be submitted.", "warning")
+        flash("Only an active started job can be submitted.", "warning")
         return redirect(url_for("dashboard"))
 
-    # 10 minute threshold check (elapsed >= 50 minutes out of 60 mins)
+    # 30 minute threshold check (elapsed >= 30 minutes / 1800 seconds)
     if row["timer_started_at"]:
         start_dt = datetime.strptime(row["timer_started_at"], "%Y-%m-%d %H:%M:%S")
         elapsed_secs = (datetime.now() - start_dt).total_seconds()
-        if elapsed_secs < 3000: # 50 mins = 3000 seconds (10 mins remaining)
-            flash("Submit button is only unlocked during the final 10 minutes of the 1-hour session.", "warning")
+        if elapsed_secs < 1800: # 30 mins = 1800 seconds
+            flash("End Exam / Submit is only available after 30 minutes have elapsed.", "warning")
             return redirect(url_for("dashboard"))
 
     try:
@@ -1109,7 +1091,7 @@ def submit_allocation(allocation_id):
         WHERE id=? AND user_id=? AND status='started'
     """, (now(), now(), score, allocation_id, user["id"]))
     con.commit()
-    flash("Job submitted successfully! You may now request new jobs.", "success")
+    flash("Job ended and submitted successfully! You may now request new jobs.", "success")
     return redirect(url_for("dashboard"))
 
 
