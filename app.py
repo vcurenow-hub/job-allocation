@@ -1144,18 +1144,6 @@ def show_allocation(allocation_id):
         flash("This job cannot be shown in its current state.", "warning")
         return redirect(url_for("dashboard"))
 
-    # Sequential opening check: user must open earlier allocated jobs first in order
-    earlier_unopened = con.execute("""
-        SELECT a.id, j.mat_no, j.course_code FROM allocations a
-        JOIN jobs j ON j.id = a.job_id
-        WHERE a.user_id = ? AND j.session_id = ? AND a.status = 'allocated' AND a.id < ?
-        ORDER BY a.id ASC LIMIT 1
-    """, (user["id"], row["session_id"], allocation_id)).fetchone()
-
-    if earlier_unopened:
-        flash(f"Please open your earlier allocated job (#{earlier_unopened['id']} - {earlier_unopened['mat_no']} {earlier_unopened['course_code']}) first before opening this one.", "warning")
-        return redirect(url_for("dashboard"))
-
     ip_address = request.form.get("ip_address", "").strip()
     if not ip_address:
         flash("Please enter an IP number or station identifier to open this job.", "danger")
