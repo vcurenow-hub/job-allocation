@@ -7,7 +7,7 @@ import sqlite3
 import secrets
 import random
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import (
@@ -473,8 +473,17 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
     multi_course_mats_allocated = 0
     MAX_MULTI_COURSE_MATS = 2  # Maximum of 2 multi-course students per request batch
 
+def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=False, admin_id=None):
+    session_row = con.execute("SELECT is_open FROM work_sessions WHERE id=?", (session_id,)).fetchone()
+    if not session_row or not session_row["is_open"]:
+        raise ValueError("This session table is closed. Allocations have stopped.")
+
+    total_jobs_allocated = 0
+    multi_course_mats_allocated = 0
+    MAX_MULTI_COURSE_MATS = 2
+
     while total_jobs_allocated < requested_count:
-        if multi_course_mats_allocated < MAX_MULTI_COURSE_MATS:
+        if multi_course_mats_allocated < MAX_MULTI_COURSE_MATS and total_jobs_allocated + 2 <= requested_count:
             job = con.execute("""
                 SELECT j.* FROM jobs j
                 JOIN work_sessions s ON s.id = j.session_id
@@ -483,7 +492,6 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
                 LIMIT 1
             """, (session_id,)).fetchone()
         else:
-            # Already allocated 2 multi-course students; prioritize single-course students
             job = con.execute("""
                 SELECT j.* FROM jobs j
                 JOIN work_sessions s ON s.id = j.session_id
@@ -533,9 +541,12 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
 
         is_multi_course = len(mat_jobs) > 1
 
-        if is_multi_course and multi_course_mats_allocated >= MAX_MULTI_COURSE_MATS:
-            con.execute("UPDATE jobs SET status='assigned' WHERE id=?", (job["id"],))
-            continue
+        if total_jobs_allocated + len(mat_jobs) > requested_count:
+            if is_multi_course:
+                con.execute("UPDATE jobs SET status='assigned' WHERE id=?", (job["id"],))
+                continue
+            else:
+                mat_jobs = mat_jobs[:(requested_count - total_jobs_allocated)]
 
         allocated_in_round = 0
         for mj in mat_jobs:
@@ -558,7 +569,7 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
             WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
         """, (session_id,)).fetchone()["n"]
 
-        if remaining_count == 0:
+        if remaining_count == 0 or total_jobs_allocated >= requested_count:
             break
 
     return total_jobs_allocated
@@ -1096,8 +1107,22 @@ def request_jobs():
     except ValueError:
         quantity = 0
 
-    if quantity < 1 or quantity > 100:
-        flash("Please request between 1 and 100 jobs.", "warning")
+    if quantity < 1 or quantity > 6:
+        flash("You cannot request more than 6 jobs at a time (maximum 6 jobs per request).", "warning")
+        return redirect(url_for("dashboard"))
+
+    # Rate limit: max 6 jobs within 20 minutes interval
+    twenty_mins_ago = datetime.now() - timedelta(minutes=20)
+    twenty_mins_ago_str = twenty_mins_ago.strftime("%Y-%m-%d %H:%M:%S")
+
+    recent_allocated_count = con.execute("""
+        SELECT COUNT(*) AS n FROM allocations
+        WHERE user_id = ? AND created_at >= ? AND status != 'reported'
+    """, (user["id"], twenty_mins_ago_str)).fetchone()["n"]
+
+    if recent_allocated_count + quantity > 6:
+        max_allowed = max(0, 6 - recent_allocated_count)
+        flash(f"Rate limit: You have received {recent_allocated_count} job(s) in the last 20 minutes. You can request at most {max_allowed} more job(s) right now.", "warning")
         return redirect(url_for("dashboard"))
 
     if active_unsubmitted + quantity > 8:
@@ -1115,7 +1140,10 @@ def request_jobs():
         return redirect(url_for("dashboard"))
 
     if allocated > 0:
-        flash(f"Successfully allocated {allocated} job(s) mixed across open session tables.", "success")
+        if allocated < quantity:
+            flash(f"Partial allocation: Only {allocated} job(s) were available and allocated (that is all that remains across open sessions).", "warning")
+        else:
+            flash(f"Successfully allocated {allocated} job(s) mixed across open session tables.", "success")
     else:
         flash("No available jobs remain in the open sessions.", "warning")
 
