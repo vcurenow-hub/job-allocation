@@ -24,8 +24,12 @@ import openpyxl
 # ============================================================
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-DATABASE = os.path.join(BASE_DIR, "portal.db")
-UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
+if os.path.exists("/data"):
+    DATABASE = os.path.join("/data", "portal.db")
+    UPLOAD_FOLDER = os.path.join("/data", "uploads")
+else:
+    DATABASE = os.path.join(BASE_DIR, "portal.db")
+    UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
@@ -1040,21 +1044,21 @@ def show_allocation(allocation_id):
     """, (user["id"], row["session_id"], allocation_id)).fetchone()
 
     if earlier_unopened:
-        flash("You must open and input the IP address for your earlier allocated job(s) first in sequence.", "warning")
+        flash("You must open your earlier allocated job(s) first in sequence.", "warning")
         return redirect(url_for("dashboard"))
 
     ip_address = request.form.get("ip_address", "").strip()
     if not ip_address:
-        flash("Please enter the Computer IP Address to open this job.", "danger")
+        flash("Please enter an IP number or station identifier to open this job.", "danger")
         return redirect(url_for("dashboard"))
 
-    # Once IP is input and work viewed, start the timer immediately (status='started')
+    # Once IP/number is put, start the timer immediately (status='started')
     con.execute("""
         UPDATE allocations SET status='started', shown_at=?, started_at=?, timer_started_at=?, ip_address=?
         WHERE id=? AND user_id=? AND status='allocated'
     """, (now(), now(), now(), ip_address, allocation_id, user["id"]))
     con.commit()
-    flash("Job opened and timer started! 1-hour countdown is active.", "success")
+    flash(f"Job opened with IP/Station '{ip_address}' and timer started!", "success")
     return redirect(url_for("dashboard"))
 
 
@@ -1092,6 +1096,46 @@ def submit_allocation(allocation_id):
     """, (now(), now(), score, allocation_id, user["id"]))
     con.commit()
     flash("Job ended and submitted successfully! You may now request new jobs.", "success")
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/allocation/<int:allocation_id>/replace-done", methods=["POST"])
+@login_required
+def replace_done_allocation(allocation_id):
+    user = current_user()
+    con = get_db()
+    row = get_owned_allocation(con, allocation_id, user["id"])
+
+    if row["status"] not in ("shown", "started"):
+        flash("You can request a replacement for an active or started job.", "warning")
+        return redirect(url_for("dashboard"))
+
+    try:
+        con.execute("BEGIN IMMEDIATE")
+
+        con.execute("""
+            UPDATE allocations SET status='finished', finished_at=?, score=100
+            WHERE id=? AND user_id=?
+        """, (now(), allocation_id, user["id"]))
+
+        con.execute("UPDATE jobs SET status='finished' WHERE id=?", (row["job_id"],))
+
+        replacement = available_job(con, row["session_id"])
+        replacement_id = None
+        if replacement:
+            replacement_id = create_allocation(
+                con, replacement["id"], user["id"], manual=False,
+                replacement_for=allocation_id
+            )
+            flash(f"Job marked as already done. Replacement job #{replacement_id} automatically assigned to you!", "success")
+        else:
+            flash("Job marked as done, but no other available jobs remain in this session.", "info")
+
+        con.commit()
+    except Exception as e:
+        con.rollback()
+        flash(f"Error processing replacement: {e}", "danger")
+
     return redirect(url_for("dashboard"))
 
 
