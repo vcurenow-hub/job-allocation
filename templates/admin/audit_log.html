@@ -11,8 +11,14 @@
 </div>
 
 <div class="card card-custom">
+    <div class="card-header-custom d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <h5 class="mb-0 fw-bold"><i class="bi bi-clock-history me-2 text-primary"></i>Audit Trail Directory</h5>
+        <div style="width: 300px;">
+            <input type="text" id="auditSearchInput" class="form-control form-control-sm" placeholder="Search admin, action, details...">
+        </div>
+    </div>
     <div class="table-responsive">
-        <table class="table table-hover table-custom align-middle mb-0">
+        <table class="table table-custom table-hover align-middle mb-0" id="auditTable">
             <thead>
                 <tr>
                     <th style="width: 70px;">ID</th>
@@ -46,4 +52,26 @@
         </table>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const searchInput = document.getElementById('auditSearchInput');
+    const rows = document.querySelectorAll('#auditTable tbody tr');
+    if (searchInput) {
+        searchInput.addEventListener('input', function () {
+            const query = this.value.toLowerCase().trim();
+            rows.forEach(row => {
+                const text = row.textContent.toLowerCase();
+                if (text.includes(query)) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+        });
+    }
+});
+</script>
 {% endblock %}

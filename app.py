@@ -11,7 +11,7 @@ from functools import wraps
 
 from flask import (
     Flask, request, redirect, url_for, session,
-    flash, render_template, abort, g, Response
+    flash, render_template, abort, g, Response, make_response
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -432,7 +432,8 @@ def current_allocation_session(con):
 def available_job(con, session_id):
     return con.execute("""
         SELECT j.* FROM jobs j
-        WHERE j.session_id=? AND j.status='available'
+        JOIN work_sessions s ON s.id = j.session_id
+        WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
         ORDER BY j.is_priority DESC, RANDOM()
         LIMIT 1
     """, (session_id,)).fetchone()
@@ -463,29 +464,79 @@ def create_allocation(con, job_id, user_id, manual=False,
 
 
 def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=False, admin_id=None):
-    allocated = 0
-    while allocated < requested_count:
-        job = con.execute("""
-            SELECT j.* FROM jobs j
-            WHERE j.session_id=? AND j.status='available'
-            ORDER BY j.is_priority DESC, RANDOM()
-            LIMIT 1
-        """, (session_id,)).fetchone()
+    session_row = con.execute("SELECT is_open FROM work_sessions WHERE id=?", (session_id,)).fetchone()
+    if not session_row or not session_row["is_open"]:
+        raise ValueError("This session table is closed. Allocations have stopped.")
+
+    total_jobs_allocated = 0
+    multi_course_mats_allocated = 0
+    MAX_MULTI_COURSE_MATS = 2  # Maximum of 2 multi-course students per request batch
+
+    while total_jobs_allocated < requested_count:
+        if multi_course_mats_allocated < MAX_MULTI_COURSE_MATS:
+            job = con.execute("""
+                SELECT j.* FROM jobs j
+                JOIN work_sessions s ON s.id = j.session_id
+                WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
+                ORDER BY j.is_priority DESC, RANDOM()
+                LIMIT 1
+            """, (session_id,)).fetchone()
+        else:
+            # Already allocated 2 multi-course students; prioritize single-course students
+            job = con.execute("""
+                SELECT j.* FROM jobs j
+                JOIN work_sessions s ON s.id = j.session_id
+                WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
+                  AND j.mat_no IN (
+                      SELECT j2.mat_no FROM jobs j2
+                      WHERE j2.session_id=? AND j2.status='available'
+                      GROUP BY j2.mat_no
+                      HAVING COUNT(*) = 1
+                  )
+                ORDER BY j.is_priority DESC, RANDOM()
+                LIMIT 1
+            """, (session_id, session_id)).fetchone()
+
+            if not job:
+                job = con.execute("""
+                    SELECT j.* FROM jobs j
+                    JOIN work_sessions s ON s.id = j.session_id
+                    WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
+                    ORDER BY j.is_priority DESC, RANDOM()
+                    LIMIT 1
+                """, (session_id,)).fetchone()
 
         if not job:
             break
 
         mat_no = job["mat_no"]
+
+        already_allocated_mat = con.execute("""
+            SELECT 1 FROM allocations a JOIN jobs j ON j.id = a.job_id
+            WHERE a.user_id = ? AND j.session_id = ? AND j.mat_no = ? AND a.status != 'reported'
+        """, (user_id, session_id, mat_no)).fetchone()
+
+        if already_allocated_mat:
+            con.execute("UPDATE jobs SET status='assigned' WHERE id=?", (job["id"],))
+            continue
+
         mat_jobs = con.execute("""
             SELECT j.* FROM jobs j
-            WHERE j.session_id=? AND j.mat_no=? AND j.status='available'
+            JOIN work_sessions s ON s.id = j.session_id
+            WHERE j.session_id=? AND s.is_open=1 AND j.mat_no=? AND j.status='available'
             ORDER BY j.is_priority DESC, RANDOM()
         """, (session_id, mat_no)).fetchall()
 
         if not mat_jobs:
-            con.execute("UPDATE jobs SET status='available' WHERE id=?", (job["id"],))
             mat_jobs = [job]
 
+        is_multi_course = len(mat_jobs) > 1
+
+        if is_multi_course and multi_course_mats_allocated >= MAX_MULTI_COURSE_MATS:
+            con.execute("UPDATE jobs SET status='assigned' WHERE id=?", (job["id"],))
+            continue
+
+        allocated_in_round = 0
         for mj in mat_jobs:
             existing = con.execute("""
                 SELECT 1 FROM allocations WHERE job_id = ? AND status != 'reported'
@@ -494,12 +545,22 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
                 continue
 
             create_allocation(con, mj["id"], user_id, manual=manual, admin_id=admin_id)
-            allocated += 1
+            total_jobs_allocated += 1
+            allocated_in_round += 1
 
-        if not mat_jobs:
+        if allocated_in_round > 0 and is_multi_course:
+            multi_course_mats_allocated += 1
+
+        remaining_count = con.execute("""
+            SELECT COUNT(*) AS n FROM jobs j
+            JOIN work_sessions s ON s.id = j.session_id
+            WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
+        """, (session_id,)).fetchone()["n"]
+
+        if remaining_count == 0:
             break
 
-    return allocated
+    return total_jobs_allocated
 
 
 @app.route("/admin/job/<int:job_id>/toggle-priority", methods=["POST"])
@@ -542,6 +603,19 @@ def user_allocation_rows(con, user_id):
         JOIN jobs j ON j.id=a.job_id
         JOIN work_sessions s ON s.id=j.session_id
         WHERE a.user_id=? AND a.status IN ('allocated', 'shown', 'started')
+        ORDER BY a.id DESC
+    """, (user_id,)).fetchall()
+
+
+def user_completed_allocation_rows(con, user_id):
+    return con.execute("""
+        SELECT a.*, j.mat_no, j.course_code, j.student_name,
+               j.signature_id, j.department, j.source,
+               s.name AS session_name
+        FROM allocations a
+        JOIN jobs j ON j.id=a.job_id
+        JOIN work_sessions s ON s.id=j.session_id
+        WHERE a.user_id=? AND a.status IN ('finished', 'scored')
         ORDER BY a.id DESC
     """, (user_id,)).fetchall()
 
@@ -946,6 +1020,7 @@ def dashboard():
 
     con = get_db()
     allocations = user_allocation_rows(con, user["id"])
+    completed_allocations = user_completed_allocation_rows(con, user["id"])
     current_session = current_allocation_session(con)
     scored = scored_job_count(con, user["id"])
 
@@ -953,6 +1028,7 @@ def dashboard():
         "dashboard.html",
         user=user,
         allocations=allocations,
+        completed_allocations=completed_allocations,
         current_session=current_session,
         scored=scored
     )
@@ -1037,14 +1113,14 @@ def show_allocation(allocation_id):
 
     # Sequential opening check: user must open earlier allocated jobs first in order
     earlier_unopened = con.execute("""
-        SELECT a.id FROM allocations a
+        SELECT a.id, j.mat_no, j.course_code FROM allocations a
         JOIN jobs j ON j.id = a.job_id
         WHERE a.user_id = ? AND j.session_id = ? AND a.status = 'allocated' AND a.id < ?
         ORDER BY a.id ASC LIMIT 1
     """, (user["id"], row["session_id"], allocation_id)).fetchone()
 
     if earlier_unopened:
-        flash("You must open your earlier allocated job(s) first in sequence.", "warning")
+        flash(f"Please open your earlier allocated job (#{earlier_unopened['id']} - {earlier_unopened['mat_no']} {earlier_unopened['course_code']}) first before opening this one.", "warning")
         return redirect(url_for("dashboard"))
 
     ip_address = request.form.get("ip_address", "").strip()
@@ -1473,6 +1549,7 @@ def upload_records():
     if request.method == "POST":
         file = request.files.get("file")
         pasted_text = request.form.get("pasted_text", "").strip()
+        already_done_text = request.form.get("already_done_text", "").strip()
         selected_session_val = request.form.get("session_id", "auto")
 
         try:
@@ -1489,29 +1566,42 @@ def upload_records():
                     "Ensure records contain matriculation numbers (e.g. nou123456789) and course codes (e.g. GST101)."
                 )
 
+            done_set = set()
+            if already_done_text:
+                done_records, _ = parse_records_from_rows(already_done_text.splitlines(), raw_text=already_done_text)
+                for dr in done_records:
+                    done_set.add((dr["mat_no"], dr["course_code"]))
+
             added = 0
             duplicates = 0
             bucket_counts = {"8:00 AM": 0, "11:00 AM": 0, "2:00 PM": 0}
+
+            forced_sid = None
+            if selected_session_val != "auto" and str(selected_session_val).isdigit():
+                forced_sid = int(selected_session_val)
 
             for r in records:
                 bucket = r["session_bucket"]
                 bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
 
-                if selected_session_val == "auto":
-                    target_sid = session_map.get(bucket, sessions[0]["id"] if sessions else 1)
+                if forced_sid is not None:
+                    target_sid = forced_sid
                 else:
-                    target_sid = int(selected_session_val)
+                    target_sid = session_map.get(bucket, sessions[0]["id"] if sessions else 1)
+
+                is_done = (r["mat_no"], r["course_code"]) in done_set
+                job_status = 'finished' if is_done else 'available'
 
                 try:
                     con.execute("""
                         INSERT INTO jobs(
                             session_id,mat_no,course_code,student_name,
                             signature_id,department,source,status,created_at
-                        ) VALUES(?,?,?,?,?,?,?,'available',?)
+                        ) VALUES(?,?,?,?,?,?,?,?,?)
                     """, (
                         target_sid, r["mat_no"], r["course_code"],
                         r["student_name"], r["signature_id"],
-                        r["department"], r["source"], now()
+                        r["department"], r["source"], job_status, now()
                     ))
                     added += 1
                 except sqlite3.IntegrityError:
@@ -1595,6 +1685,9 @@ def admin_jobs():
 def admin_session_tables():
     con = get_db()
     sessions = con.execute("SELECT * FROM work_sessions ORDER BY sequence").fetchall()
+    approved_users = con.execute("""
+        SELECT id, username FROM users WHERE role='user' AND approved=1 AND active=1 ORDER BY username
+    """).fetchall()
 
     session_data = []
     for s in sessions:
@@ -1613,7 +1706,69 @@ def admin_session_tables():
         """, (s["id"],)).fetchall()
         session_data.append({"session": s, "rows": rows})
 
-    return render_template("admin/session_tables.html", user=current_user(), session_data=session_data)
+    return render_template("admin/session_tables.html", user=current_user(), session_data=session_data, approved_users=approved_users)
+
+
+@app.route("/admin/allocation/<int:allocation_id>/release", methods=["POST"])
+@login_required
+@admin_required
+def admin_release_allocation(allocation_id):
+    con = get_db()
+    alloc = con.execute("""
+        SELECT a.*, j.id AS job_id, j.mat_no, j.course_code
+        FROM allocations a JOIN jobs j ON j.id = a.job_id
+        WHERE a.id=?
+    """, (allocation_id,)).fetchone()
+    if not alloc:
+        abort(404)
+
+    job_id = alloc["job_id"]
+
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        con.execute("UPDATE allocations SET status='reported' WHERE id=?", (allocation_id,))
+        con.execute("UPDATE jobs SET status='available' WHERE id=?", (job_id,))
+        con.commit()
+        audit(current_user()["id"], "RELEASE_JOB", f"Released job #{job_id} ({alloc['mat_no']} / {alloc['course_code']}) back to unallocated pool.")
+        flash("Job released back to unallocated pool awaiting allocation.", "success")
+    except Exception as e:
+        con.rollback()
+        flash(f"Error releasing job: {e}", "danger")
+
+    return redirect(request.referrer or url_for("admin_session_tables"))
+
+
+@app.route("/admin/allocation/<int:allocation_id>/reallocate", methods=["POST"])
+@login_required
+@admin_required
+def admin_reallocate_allocation(allocation_id):
+    con = get_db()
+    alloc = con.execute("""
+        SELECT a.*, j.id AS job_id, j.session_id, j.mat_no, j.course_code
+        FROM allocations a JOIN jobs j ON j.id = a.job_id
+        WHERE a.id=?
+    """, (allocation_id,)).fetchone()
+    if not alloc:
+        abort(404)
+
+    new_user_id = request.form.get("new_user_id")
+    if not new_user_id:
+        flash("Please select a user to reallocate this job to.", "warning")
+        return redirect(request.referrer or url_for("admin_session_tables"))
+
+    try:
+        new_user_id = int(new_user_id)
+        con.execute("BEGIN IMMEDIATE")
+        con.execute("UPDATE allocations SET status='reported' WHERE id=?", (allocation_id,))
+        create_allocation(con, alloc["job_id"], new_user_id, manual=True, admin_id=current_user()["id"])
+        con.commit()
+        audit(current_user()["id"], "REALLOCATE_JOB", f"Reallocated job #{alloc['job_id']} to user ID {new_user_id}")
+        flash("Job successfully reallocated to the selected user.", "success")
+    except Exception as e:
+        con.rollback()
+        flash(f"Error reallocating job: {e}", "danger")
+
+    return redirect(request.referrer or url_for("admin_session_tables"))
 
 
 @app.route("/admin/job/<int:job_id>/delete", methods=["POST"])
@@ -1723,6 +1878,36 @@ def admin_clear_all_records():
         flash(f"Error deleting all records: {e}", "danger")
 
     return redirect(request.referrer or url_for("upload_records"))
+
+
+@app.route("/admin/end-all-allocations", methods=["POST"])
+@login_required
+@admin_required
+def admin_end_all_allocations():
+    con = get_db()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+
+        active_allocs = con.execute("""
+            SELECT a.id, a.job_id FROM allocations a
+            WHERE a.status IN ('allocated', 'shown', 'started')
+        """).fetchall()
+
+        for a in active_allocs:
+            con.execute("""
+                UPDATE allocations SET status='finished', finished_at=?, submitted_at=?, score=100
+                WHERE id=?
+            """, (now(), now(), a["id"]))
+            con.execute("UPDATE jobs SET status='finished' WHERE id=?", (a["job_id"],))
+
+        con.commit()
+        audit(current_user()["id"], "END_ALL_ALLOCATIONS", f"Force ended {len(active_allocs)} active user allocations.")
+        flash(f"Successfully ended and closed {len(active_allocs)} active user allocation(s). Users are now cleared.", "success")
+    except Exception as e:
+        con.rollback()
+        flash(f"Error ending all allocations: {e}", "danger")
+
+    return redirect(request.referrer or url_for("admin_dashboard"))
 
 
 @app.route("/admin/session/<int:sid>/add-job", methods=["POST"])
@@ -2046,6 +2231,33 @@ def export_csv():
         output.getvalue(),
         mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=allocations.csv"}
+    )
+
+
+@app.route("/admin/export-completed-csv")
+@login_required
+@admin_required
+def export_completed_csv():
+    con = get_db()
+    rows = con.execute("""
+        SELECT j.mat_no, j.course_code, j.student_name, s.name AS session_name, a.score, a.finished_at
+        FROM allocations a
+        JOIN jobs j ON j.id = a.job_id
+        JOIN work_sessions s ON s.id = j.session_id
+        WHERE a.status IN ('finished', 'scored')
+        ORDER BY a.id DESC
+    """).fetchall()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Matriculation Number", "Course Code", "Student Name", "Session", "Score", "Finished At"])
+    for r in rows:
+        writer.writerow([r["mat_no"], r["course_code"], r["student_name"] or "", r["session_name"], r["score"] or "", r["finished_at"] or ""])
+
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=completed_jobs_export.csv"}
     )
 
 

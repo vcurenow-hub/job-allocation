@@ -9,7 +9,7 @@
             <div class="d-flex justify-content-between align-items-center mb-3">
                 <div>
                     <h3 class="fw-bold mb-1"><i class="bi bi-table text-primary me-2"></i>All Uploaded Copies & Allocation Tracking</h3>
-                    <p class="text-muted mb-0">Scrolling real-time log with color coding: <span class="badge bg-danger">Red = Unattended</span>, <span class="badge bg-warning text-dark">Yellow = In Progress</span>, <span class="badge bg-success">Green = Finished</span>.</p>
+                    <p class="text-muted mb-0">Scrolling real-time log with color coding: <span class="badge bg-danger">Red = Unattended</span>, <span class="badge bg-warning text-dark">Yellow = In Progress</span>, <span class="badge bg-success">Green = Finished</span>. 40-min countdown timers turn red at 5 mins left.</p>
                 </div>
                 <div class="d-flex gap-2 align-items-center">
                     <span class="badge bg-primary fs-6 px-3 py-2">Total Uploaded: {{ rows|length }}</span>
@@ -234,7 +234,9 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    const totalSeconds = 3600;
+    const totalSeconds = 2400; // 40 minutes = 2400 seconds
+    const warningSeconds = 300; // 5 minutes remaining (300 seconds) - turns red
+
     document.querySelectorAll('.admin-timer').forEach(el => {
         const startStr = el.dataset.timerStart;
         if (!startStr) return;
@@ -248,12 +250,20 @@ document.addEventListener('DOMContentLoaded', function () {
 
             if (remainingSecs <= 0) {
                 countdownSpan.textContent = "00:00 (Expired)";
+                el.className = "admin-timer mt-1 small text-danger fw-bold";
                 return;
             }
 
             const mins = Math.floor(remainingSecs / 60);
             const secs = remainingSecs % 60;
             countdownSpan.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+
+            // Turn red when 5 minutes or less remaining
+            if (remainingSecs <= warningSeconds) {
+                el.className = "admin-timer mt-1 small text-danger fw-bold";
+            } else {
+                el.className = "admin-timer mt-1 small text-info fw-bold";
+            }
         }
 
         updateAdminTimer();
