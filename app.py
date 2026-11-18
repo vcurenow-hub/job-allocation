@@ -1568,6 +1568,9 @@ def upload_records():
     has_gemini_key = bool(os.environ.get("GEMINI_API_KEY"))
 
     if request.method == "POST":
+        file = request.files.get("file")
+        pasted_text = request.form.get("pasted_text", "").strip()
+        already_done_text = request.form.get("already_done_text", "").strip()
         auto_allocate = request.form.get("auto_allocate") == "1"
         selected_session_val = request.form.get("session_id", "auto")
 
