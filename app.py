@@ -5,6 +5,7 @@ import csv
 import json
 import sqlite3
 import secrets
+import random
 import urllib.request
 from datetime import datetime
 from functools import wraps
@@ -1021,7 +1022,7 @@ def dashboard():
     con = get_db()
     allocations = user_allocation_rows(con, user["id"])
     completed_allocations = user_completed_allocation_rows(con, user["id"])
-    current_session = current_allocation_session(con)
+    open_sessions = con.execute("SELECT * FROM work_sessions WHERE is_open=1 ORDER BY sequence").fetchall()
     scored = scored_job_count(con, user["id"])
 
     return render_template(
@@ -1029,9 +1030,40 @@ def dashboard():
         user=user,
         allocations=allocations,
         completed_allocations=completed_allocations,
-        current_session=current_session,
+        open_sessions=open_sessions,
         scored=scored
     )
+
+
+def allocate_jobs_mixed_sessions(con, user_id, requested_count, manual=False, admin_id=None):
+    open_sessions = con.execute("""
+        SELECT * FROM work_sessions WHERE is_open=1 ORDER BY sequence
+    """).fetchall()
+
+    if not open_sessions:
+        raise ValueError("There are no open allocation sessions.")
+
+    total_allocated = 0
+    attempts = 0
+    while total_allocated < requested_count and attempts < (requested_count * 3):
+        attempts += 1
+        available_sessions = []
+        for s in open_sessions:
+            cnt = con.execute("""
+                SELECT COUNT(*) AS n FROM jobs WHERE session_id=? AND status='available'
+            """, (s["id"],)).fetchone()["n"]
+            if cnt > 0:
+                available_sessions.append(s)
+
+        if not available_sessions:
+            break
+
+        target_session = random.choice(available_sessions)
+        allocated_in_session = allocate_jobs_to_user(con, target_session["id"], user_id, 1, manual=manual, admin_id=admin_id)
+        if allocated_in_session > 0:
+            total_allocated += allocated_in_session
+
+    return total_allocated
 
 
 @app.route("/request-jobs", methods=["POST"])
@@ -1042,18 +1074,18 @@ def request_jobs():
         abort(403)
 
     con = get_db()
-    current = current_allocation_session(con)
+    open_sessions = con.execute("SELECT * FROM work_sessions WHERE is_open=1").fetchall()
 
-    if not current:
-        flash("There is no open allocation session.", "danger")
+    if not open_sessions:
+        flash("There are no open allocation sessions.", "danger")
         return redirect(url_for("dashboard"))
 
     # Restriction: User can hold up to 8 active unsubmitted jobs at a time
     active_unsubmitted = con.execute("""
         SELECT COUNT(*) AS n FROM allocations a
         JOIN jobs j ON j.id = a.job_id
-        WHERE a.user_id = ? AND j.session_id = ? AND a.status IN ('allocated', 'shown', 'started')
-    """, (user["id"], current["id"])).fetchone()["n"]
+        WHERE a.user_id = ? AND a.status IN ('allocated', 'shown', 'started')
+    """, (user["id"],)).fetchone()["n"]
 
     if active_unsubmitted >= 8:
         flash("You have reached the limit of 8 active unsubmitted jobs. Please submit some before requesting new ones.", "warning")
@@ -1075,16 +1107,17 @@ def request_jobs():
     allocated = 0
     try:
         con.execute("BEGIN IMMEDIATE")
-        allocated = allocate_jobs_to_user(con, current["id"], user["id"], quantity, manual=False)
+        allocated = allocate_jobs_mixed_sessions(con, user["id"], quantity, manual=False)
         con.commit()
-    except Exception:
+    except Exception as e:
         con.rollback()
-        raise
+        flash(f"Error allocating jobs: {e}", "danger")
+        return redirect(url_for("dashboard"))
 
     if allocated > 0:
-        flash(f"Successfully allocated {allocated} job(s) to you.", "success")
+        flash(f"Successfully allocated {allocated} job(s) mixed across open session tables.", "success")
     else:
-        flash("No available jobs remain in the current session.", "warning")
+        flash("No available jobs remain in the open sessions.", "warning")
 
     return redirect(url_for("dashboard"))
 
