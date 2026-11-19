@@ -659,6 +659,17 @@ def user_completed_allocation_rows(con, user_id):
     """, (user_id,)).fetchall()
 
 
+def user_report_rows(con, user_id):
+    return con.execute("""
+        SELECT r.*, j.mat_no, j.course_code, s.name AS session_name
+        FROM reports r
+        JOIN jobs j ON j.id = r.job_id
+        JOIN work_sessions s ON s.id = j.session_id
+        WHERE r.user_id = ?
+        ORDER BY r.id DESC
+    """, (user_id,)).fetchall()
+
+
 # ============================================================
 # MULTI-FORMAT RECORD IMPORT PARSER (.txt, .docx, .csv, .xlsx)
 # ============================================================
@@ -1060,6 +1071,7 @@ def dashboard():
     con = get_db()
     allocations = user_allocation_rows(con, user["id"])
     completed_allocations = user_completed_allocation_rows(con, user["id"])
+    user_reports = user_report_rows(con, user["id"])
     open_sessions = con.execute("SELECT * FROM work_sessions WHERE is_open=1 ORDER BY sequence").fetchall()
     scored = scored_job_count(con, user["id"])
 
@@ -1068,6 +1080,7 @@ def dashboard():
         user=user,
         allocations=allocations,
         completed_allocations=completed_allocations,
+        user_reports=user_reports,
         open_sessions=open_sessions,
         scored=scored
     )

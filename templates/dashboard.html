@@ -44,7 +44,7 @@
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <div class="mb-3">
                         <label class="form-label font-semibold">Quantity of Jobs</label>
-                        <input type="number" name="quantity" class="form-control" min="1" max="100" placeholder="e.g. 5" required>
+                        <input type="number" name="quantity" class="form-control" min="1" max="6" placeholder="e.g. 5" required>
                     </div>
                     {% if scored < 2 %}
                         <div class="alert alert-warning p-2 small mb-3">
@@ -54,7 +54,7 @@
                     <button type="submit" class="btn btn-primary w-100 py-2 fw-bold">
                         <i class="bi bi-send me-1"></i> Request Jobs
                     </button>
-                    <div class="form-text mt-2 small text-muted"><i class="bi bi-info-circle me-1"></i> Note: You can hold up to 8 active unsubmitted jobs at a time.</div>
+                    <div class="form-text mt-2 small text-muted"><i class="bi bi-info-circle me-1"></i> Note: Maximum 6 jobs per request (20-min rate limit applies).</div>
                 </form>
             {% else %}
                 <div class="alert alert-secondary mb-0">
@@ -75,6 +75,11 @@
     <li class="nav-item" role="presentation">
         <button class="nav-link fw-bold py-2" id="completed-tab" data-bs-toggle="tab" data-bs-target="#completed-pane" type="button" role="tab">
             <i class="bi bi-folder2-open me-2"></i>Completed Folder <span class="badge bg-success ms-1">{{ completed_allocations|length }}</span>
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link fw-bold py-2" id="reports-tab" data-bs-toggle="tab" data-bs-target="#reports-pane" type="button" role="tab">
+            <i class="bi bi-flag me-2"></i>Reported Cases Folder <span class="badge bg-danger ms-1">{{ user_reports|length }}</span>
         </button>
     </li>
 </ul>
@@ -283,6 +288,67 @@
                                 <td colspan="5" class="text-center py-5 text-muted">
                                     <i class="bi bi-folder fs-3 d-block mb-2"></i>
                                     Your completed jobs folder is currently empty.
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- REPORTED CASES FOLDER PANE -->
+    <div class="tab-pane fade" id="reports-pane" role="tabpanel">
+        <div class="card card-custom p-4">
+            <h5 class="fw-bold mb-3"><i class="bi bi-flag text-danger me-2"></i>My Reported Cases Folder</h5>
+            <p class="text-muted small mb-3">Review all issues you have reported for jobs, along with their resolution status and replacement details.</p>
+            <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
+                <table class="table table-hover table-custom align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>#ID</th>
+                            <th>Session</th>
+                            <th>Record (Mat & Course)</th>
+                            <th>Reason & Explanation</th>
+                            <th>Replacement</th>
+                            <th>Status</th>
+                            <th>Timestamp</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for rep in user_reports %}
+                            <tr>
+                                <td class="fw-bold text-muted">#{{ rep.id }}</td>
+                                <td><span class="fw-semibold text-dark">{{ rep.session_name }}</span></td>
+                                <td>
+                                    <div><span class="font-monospace text-primary fw-bold" style="cursor: pointer;" title="Click to copy" onclick="copyMat('{{ rep.mat_no }}', this)">{{ rep.mat_no }} <i class="bi bi-clipboard ms-1 text-muted" style="font-size: 0.8rem;"></i></span></div>
+                                    <div><span class="badge bg-dark">{{ rep.course_code }}</span></div>
+                                </td>
+                                <td>
+                                    <div class="badge bg-danger mb-1">{{ rep.reason }}</div>
+                                    <div class="small text-muted">{{ rep.explanation }}</div>
+                                </td>
+                                <td>
+                                    {% if rep.replacement_allocation_id %}
+                                        <span class="badge bg-success">Replacement #{{ rep.replacement_allocation_id }}</span>
+                                    {% else %}
+                                        <span class="text-muted small">None</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if rep.status == 'open' %}
+                                        <span class="badge bg-warning text-dark px-2 py-1">Open</span>
+                                    {% else %}
+                                        <span class="badge bg-success px-2 py-1">Resolved</span>
+                                    {% endif %}
+                                </td>
+                                <td class="small text-muted">{{ rep.created_at }}</td>
+                            </tr>
+                        {% else %}
+                            <tr>
+                                <td colspan="7" class="text-center py-5 text-muted">
+                                    <i class="bi bi-flag fs-3 d-block mb-2"></i>
+                                    You have not reported any cases yet.
                                 </td>
                             </tr>
                         {% endfor %}
