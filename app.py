@@ -435,6 +435,9 @@ def available_job(con, session_id):
         SELECT j.* FROM jobs j
         JOIN work_sessions s ON s.id = j.session_id
         WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
+          AND j.id NOT IN (
+              SELECT job_id FROM allocations WHERE status != 'reported'
+          )
         ORDER BY j.is_priority DESC, RANDOM()
         LIMIT 1
     """, (session_id,)).fetchone()
@@ -447,6 +450,12 @@ def create_allocation(con, job_id, user_id, manual=False,
     ).fetchone()
     if not job or job["status"] != "available":
         raise ValueError("This job is not available.")
+
+    # Double check no active allocation exists for this job
+    existing = con.execute("SELECT 1 FROM allocations WHERE job_id=? AND status != 'reported'", (job_id,)).fetchone()
+    if existing:
+        con.execute("UPDATE jobs SET status='assigned' WHERE id=?", (job_id,))
+        raise ValueError("This job has already been allocated.")
 
     con.execute("""
         INSERT INTO allocations(
@@ -471,15 +480,6 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
 
     total_jobs_allocated = 0
     multi_course_mats_allocated = 0
-    MAX_MULTI_COURSE_MATS = 2  # Maximum of 2 multi-course students per request batch
-
-def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=False, admin_id=None):
-    session_row = con.execute("SELECT is_open FROM work_sessions WHERE id=?", (session_id,)).fetchone()
-    if not session_row or not session_row["is_open"]:
-        raise ValueError("This session table is closed. Allocations have stopped.")
-
-    total_jobs_allocated = 0
-    multi_course_mats_allocated = 0
     MAX_MULTI_COURSE_MATS = 2
 
     while total_jobs_allocated < requested_count:
@@ -488,6 +488,9 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
                 SELECT j.* FROM jobs j
                 JOIN work_sessions s ON s.id = j.session_id
                 WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
+                  AND j.id NOT IN (
+                      SELECT job_id FROM allocations WHERE status != 'reported'
+                  )
                 ORDER BY j.is_priority DESC, RANDOM()
                 LIMIT 1
             """, (session_id,)).fetchone()
@@ -496,9 +499,13 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
                 SELECT j.* FROM jobs j
                 JOIN work_sessions s ON s.id = j.session_id
                 WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
+                  AND j.id NOT IN (
+                      SELECT job_id FROM allocations WHERE status != 'reported'
+                  )
                   AND j.mat_no IN (
                       SELECT j2.mat_no FROM jobs j2
                       WHERE j2.session_id=? AND j2.status='available'
+                        AND j2.id NOT IN (SELECT job_id FROM allocations WHERE status != 'reported')
                       GROUP BY j2.mat_no
                       HAVING COUNT(*) = 1
                   )
@@ -511,6 +518,9 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
                     SELECT j.* FROM jobs j
                     JOIN work_sessions s ON s.id = j.session_id
                     WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
+                      AND j.id NOT IN (
+                          SELECT job_id FROM allocations WHERE status != 'reported'
+                      )
                     ORDER BY j.is_priority DESC, RANDOM()
                     LIMIT 1
                 """, (session_id,)).fetchone()
@@ -533,6 +543,9 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
             SELECT j.* FROM jobs j
             JOIN work_sessions s ON s.id = j.session_id
             WHERE j.session_id=? AND s.is_open=1 AND j.mat_no=? AND j.status='available'
+              AND j.id NOT IN (
+                  SELECT job_id FROM allocations WHERE status != 'reported'
+              )
             ORDER BY j.is_priority DESC, RANDOM()
         """, (session_id, mat_no)).fetchall()
 
@@ -554,6 +567,7 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
                 SELECT 1 FROM allocations WHERE job_id = ? AND status != 'reported'
             """, (mj["id"],)).fetchone()
             if existing:
+                con.execute("UPDATE jobs SET status='assigned' WHERE id=?", (mj["id"],))
                 continue
 
             create_allocation(con, mj["id"], user_id, manual=manual, admin_id=admin_id)
@@ -567,6 +581,7 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
             SELECT COUNT(*) AS n FROM jobs j
             JOIN work_sessions s ON s.id = j.session_id
             WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
+              AND j.id NOT IN (SELECT job_id FROM allocations WHERE status != 'reported')
         """, (session_id,)).fetchone()["n"]
 
         if remaining_count == 0 or total_jobs_allocated >= requested_count:
