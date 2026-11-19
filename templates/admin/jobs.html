@@ -82,6 +82,9 @@
                                 <td>
                                     {% if r.assigned_user %}
                                         <span class="badge bg-info text-dark fw-bold"><i class="bi bi-person-fill me-1"></i>{{ r.assigned_user }}</span>
+                                        {% if r.allocation_status in ['finished', 'scored'] %}
+                                            <div class="badge bg-success text-white mt-1">✓ Done by {{ r.assigned_user }}</div>
+                                        {% endif %}
                                         {% if r.manual %}
                                             <div class="small text-warning fw-semibold mt-1">Manual Assign</div>
                                         {% endif %}

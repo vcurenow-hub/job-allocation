@@ -3,10 +3,15 @@
 {% block title %}User Reports{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
     <div>
         <h2 class="fw-bold mb-1"><i class="bi bi-flag text-danger me-2"></i>User Reported Issues</h2>
         <p class="text-muted mb-0">Review reported malfunctioning jobs, unregistered courses, or invalid matriculation numbers.</p>
+    </div>
+    <div>
+        <a href="{{ url_for('export_reports_csv') }}" class="btn btn-outline-success fw-bold shadow-sm">
+            <i class="bi bi-download me-1"></i> Download Reported Cases CSV
+        </a>
     </div>
 </div>
 
@@ -39,13 +44,13 @@
                         <td class="fw-semibold text-dark">{{ r.username }}</td>
                         <td>{{ r.session_name }}</td>
                         <td>
-                            <div><span class="font-monospace text-primary">{{ r.mat_no }}</span></div>
+                            <div><span class="font-monospace text-primary fw-bold" style="cursor: pointer;" title="Click to copy" onclick="copyMat('{{ r.mat_no }}', this)">{{ r.mat_no }} <i class="bi bi-clipboard ms-1 text-muted" style="font-size: 0.8rem;"></i></span></div>
                             <div><span class="badge bg-dark">{{ r.course_code }}</span></div>
                         </td>
                         <td>
-                            <span class="badge bg-danger">{{ r.reason }}</span>
+                            <span class="badge bg-danger fs-6 px-2 py-1">{{ r.reason }}</span>
                         </td>
-                        <td style="max-width: 220px;" class="small text-muted">{{ r.explanation }}</td>
+                        <td style="max-width: 250px;" class="small text-dark fw-medium">{{ r.explanation }}</td>
                         <td>
                             {% if r.replacement_allocation_id %}
                                 <span class="badge bg-success">#{{ r.replacement_allocation_id }}</span>
@@ -64,12 +69,12 @@
                             {% if r.status == 'open' %}
                                 <form method="post" action="{{ url_for('resolve_report', rid=r.id) }}">
                                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                    <button type="submit" class="btn btn-sm btn-outline-success">
+                                    <button type="submit" class="btn btn-sm btn-outline-success fw-bold">
                                         <i class="bi bi-check-lg me-1"></i> Resolve
                                     </button>
                                 </form>
                             {% else %}
-                                <small class="text-muted"><i class="bi bi-check-all"></i> Done</small>
+                                <small class="text-muted fw-semibold"><i class="bi bi-check-all"></i> Done</small>
                             {% endif %}
                         </td>
                     </tr>

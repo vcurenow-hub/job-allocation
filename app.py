@@ -1773,7 +1773,20 @@ def admin_session_tables():
             WHERE j.session_id = ?
             ORDER BY j.id DESC
         """, (s["id"],)).fetchall()
-        session_data.append({"session": s, "rows": rows})
+
+        total_jobs = len(rows)
+        finished_jobs = sum(1 for r in rows if r["allocation_status"] in ['finished', 'scored'] or r["score"] is not None)
+        assigned_jobs = sum(1 for r in rows if r["allocation_status"] in ['allocated', 'shown', 'started'])
+        available_jobs = sum(1 for r in rows if r["status"] == 'available')
+
+        session_data.append({
+            "session": s,
+            "rows": rows,
+            "total_jobs": total_jobs,
+            "finished_jobs": finished_jobs,
+            "assigned_jobs": assigned_jobs,
+            "available_jobs": available_jobs
+        })
 
     return render_template("admin/session_tables.html", user=current_user(), session_data=session_data, approved_users=approved_users)
 
@@ -2238,6 +2251,34 @@ def admin_reports():
         ORDER BY r.id DESC
     """).fetchall()
     return render_template("admin/reports.html", user=current_user(), reports=reports)
+
+
+@app.route("/admin/export-reports-csv")
+@login_required
+@admin_required
+def export_reports_csv():
+    con = get_db()
+    reports = con.execute("""
+        SELECT r.id, u.username, s.name AS session_name, j.mat_no, j.course_code,
+               r.reason, r.explanation, r.status, r.created_at
+        FROM reports r
+        JOIN users u ON u.id = r.user_id
+        JOIN jobs j ON j.id = r.job_id
+        JOIN work_sessions s ON s.id = j.session_id
+        ORDER BY r.id DESC
+    """).fetchall()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Report ID", "User", "Session", "Matriculation No", "Course Code", "Reason", "Explanation", "Status", "Created At"])
+    for r in reports:
+        writer.writerow([r["id"], r["username"], r["session_name"], r["mat_no"], r["course_code"], r["reason"], r["explanation"], r["status"], r["created_at"]])
+
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=reported_cases_export.csv"}
+    )
 
 
 @app.route("/admin/report/<int:rid>/resolve", methods=["POST"])

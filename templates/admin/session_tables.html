@@ -95,11 +95,67 @@
                             </div>
                         </div>
 
+                        <!-- Live Progress Counter Cards for this Session -->
+                        <div class="row g-3 mb-4">
+                            <div class="col-sm-6 col-md-3">
+                                <div class="p-3 bg-light border rounded text-center shadow-sm">
+                                    <small class="text-muted d-block uppercase fw-bold mb-1">Total Jobs</small>
+                                    <span class="fs-4 fw-bold text-dark">{{ data.total_jobs }}</span>
+                                </div>
+                            </div>
+                            <div class="col-sm-6 col-md-3">
+                                <div class="p-3 bg-success-subtle border border-success rounded text-center shadow-sm">
+                                    <small class="text-success d-block uppercase fw-bold mb-1">Finished / Done</small>
+                                    <span class="fs-4 fw-bold text-success">{{ data.finished_jobs }}</span>
+                                </div>
+                            </div>
+                            <div class="col-sm-6 col-md-3">
+                                <div class="p-3 bg-warning-subtle border border-warning rounded text-center shadow-sm">
+                                    <small class="text-warning-emphasis d-block uppercase fw-bold mb-1">Jobs Assigned / Active</small>
+                                    <span class="fs-4 fw-bold text-warning-emphasis">{{ data.assigned_jobs }}</span>
+                                </div>
+                            </div>
+                            <div class="col-sm-6 col-md-3">
+                                <div class="p-3 bg-primary-subtle border border-primary rounded text-center shadow-sm">
+                                    <small class="text-primary d-block uppercase fw-bold mb-1">Left to Assign (Pool)</small>
+                                    <span class="fs-4 fw-bold text-primary">{{ data.available_jobs }}</span>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Table Search Bar -->
                         <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
                             <h5 class="fw-bold mb-0 text-dark"><i class="bi bi-search me-2 text-primary"></i>Search {{ s.name }} Table</h5>
                             <div style="width: 320px;">
                                 <input type="text" class="form-control table-search-input" data-target-table="sessionTable-{{ s.id }}" placeholder="Search mat no, course, user, student...">
+                            </div>
+                        </div>
+
+                        <!-- Live Progress Counter Cards for this Session -->
+                        <div class="row g-3 mb-4">
+                            <div class="col-sm-6 col-md-3">
+                                <div class="p-3 bg-light border rounded text-center shadow-sm">
+                                    <small class="text-muted d-block uppercase fw-bold mb-1">Total Jobs</small>
+                                    <span class="fs-4 fw-bold text-dark">{{ data.total_jobs }}</span>
+                                </div>
+                            </div>
+                            <div class="col-sm-6 col-md-3">
+                                <div class="p-3 bg-success-subtle border border-success rounded text-center shadow-sm">
+                                    <small class="text-success d-block uppercase fw-bold mb-1">Finished / Done</small>
+                                    <span class="fs-4 fw-bold text-success">{{ data.finished_jobs }}</span>
+                                </div>
+                            </div>
+                            <div class="col-sm-6 col-md-3">
+                                <div class="p-3 bg-warning-subtle border border-warning rounded text-center shadow-sm">
+                                    <small class="text-warning-emphasis d-block uppercase fw-bold mb-1">Jobs Assigned / Active</small>
+                                    <span class="fs-4 fw-bold text-warning-emphasis">{{ data.assigned_jobs }}</span>
+                                </div>
+                            </div>
+                            <div class="col-sm-6 col-md-3">
+                                <div class="p-3 bg-primary-subtle border border-primary rounded text-center shadow-sm">
+                                    <small class="text-primary d-block uppercase fw-bold mb-1">Left to Assign (Pool)</small>
+                                    <span class="fs-4 fw-bold text-primary">{{ data.available_jobs }}</span>
+                                </div>
                             </div>
                         </div>
 
@@ -166,6 +222,9 @@
                                             <td>
                                                 {% if r.assigned_user %}
                                                     <span class="badge bg-info text-dark fw-bold"><i class="bi bi-person-fill me-1"></i>{{ r.assigned_user }}</span>
+                                                    {% if r.allocation_status in ['finished', 'scored'] %}
+                                                        <div class="badge bg-success text-white mt-1">✓ Done by {{ r.assigned_user }}</div>
+                                                    {% endif %}
                                                     {% if r.manual %}
                                                         <div class="small text-warning fw-semibold mt-1">Manual</div>
                                                     {% endif %}
@@ -359,6 +418,34 @@
                                         <button type="submit" class="btn btn-success fw-bold">Add Record Now</button>
                                     </div>
                                 </form>
+                            </div>
+                        </div>
+
+                        <!-- Live Progress Counter Cards for this Session -->
+                        <div class="row g-3 mb-4">
+                            <div class="col-sm-6 col-md-3">
+                                <div class="p-3 bg-light border rounded text-center shadow-sm">
+                                    <small class="text-muted d-block uppercase fw-bold mb-1">Total Jobs</small>
+                                    <span class="fs-4 fw-bold text-dark">{{ data.total_jobs }}</span>
+                                </div>
+                            </div>
+                            <div class="col-sm-6 col-md-3">
+                                <div class="p-3 bg-success-subtle border border-success rounded text-center shadow-sm">
+                                    <small class="text-success d-block uppercase fw-bold mb-1">Finished / Done</small>
+                                    <span class="fs-4 fw-bold text-success">{{ data.finished_jobs }}</span>
+                                </div>
+                            </div>
+                            <div class="col-sm-6 col-md-3">
+                                <div class="p-3 bg-warning-subtle border border-warning rounded text-center shadow-sm">
+                                    <small class="text-warning-emphasis d-block uppercase fw-bold mb-1">Jobs Assigned / Active</small>
+                                    <span class="fs-4 fw-bold text-warning-emphasis">{{ data.assigned_jobs }}</span>
+                                </div>
+                            </div>
+                            <div class="col-sm-6 col-md-3">
+                                <div class="p-3 bg-primary-subtle border border-primary rounded text-center shadow-sm">
+                                    <small class="text-primary d-block uppercase fw-bold mb-1">Left to Assign (Pool)</small>
+                                    <span class="fs-4 fw-bold text-primary">{{ data.available_jobs }}</span>
+                                </div>
                             </div>
                         </div>
                     </div>

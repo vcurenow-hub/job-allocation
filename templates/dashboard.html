@@ -200,7 +200,7 @@
 
                                         <!-- Report problem section for shown/started status -->
                                         {% if a.status in ['shown', 'started'] %}
-                                            <form method="post" action="{{ url_for('replace_done_allocation', allocation_id=a.id) }}" onsubmit="return confirm('Mark this job as already done and get an automatic replacement job?');">
+                                            <form method="post" action="{{ url_for('replace_done_allocation', allocation_id=a.id) }}" onsubmit="return confirm('Are you sure you verified that this job is already done? Click OK to confirm and receive an automatic replacement.');">
                                                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                                 <button type="submit" class="btn btn-sm btn-outline-success w-100 fw-bold">
                                                     <i class="bi bi-arrow-repeat me-1"></i> Job Already Done / Replace
