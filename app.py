@@ -154,7 +154,7 @@ def normalize_time_key(time_str):
 
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DATABASE)
+        g.db = sqlite3.connect(DATABASE, check_same_thread=False)
         g.db.row_factory = sqlite3.Row
         g.db.execute("PRAGMA foreign_keys = ON")
     return g.db
@@ -168,10 +168,18 @@ def close_db(exception=None):
 
 
 def standalone_db():
-    connection = sqlite3.connect(DATABASE)
+    connection = sqlite3.connect(DATABASE, check_same_thread=False)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
+
+
+@app.after_request
+def add_header(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 def now():
