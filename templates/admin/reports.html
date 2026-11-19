@@ -8,12 +8,34 @@
         <h2 class="fw-bold mb-1"><i class="bi bi-flag text-danger me-2"></i>User Reported Issues</h2>
         <p class="text-muted mb-0">Review reported malfunctioning jobs, unregistered courses, or invalid matriculation numbers.</p>
     </div>
-    <div>
+    <div class="d-flex gap-2 align-items-center flex-wrap">
         <a href="{{ url_for('export_reports_csv') }}" class="btn btn-outline-success fw-bold shadow-sm">
-            <i class="bi bi-download me-1"></i> Download Reported Cases CSV
+            <i class="bi bi-download me-1"></i> Download All Reports CSV
         </a>
     </div>
 </div>
+
+<!-- Per-User Report Download Card -->
+{% if reporting_users %}
+    <div class="card card-custom p-3 mb-4 bg-light border">
+        <div class="d-flex align-items-center justify-content-between flex-wrap gap-3">
+            <div>
+                <h6 class="fw-bold mb-1 text-dark"><i class="bi bi-person-lines-fill text-primary me-2"></i>Download Reports by Specific User</h6>
+                <p class="text-muted small mb-0">Select a user below to export and download only their submitted reports.</p>
+            </div>
+            <div class="d-flex gap-2 align-items-center flex-wrap">
+                <select id="reportUserSelect" class="form-select form-select-sm" style="width: 220px;">
+                    {% for ru in reporting_users %}
+                        <option value="{{ ru.id }}">{{ ru.username }}</option>
+                    {% endfor %}
+                </select>
+                <button type="button" id="downloadUserReportBtn" class="btn btn-sm btn-primary fw-bold">
+                    <i class="bi bi-download me-1"></i> Download User CSV
+                </button>
+            </div>
+        </div>
+    </div>
+{% endif %}
 
 <div class="card card-custom">
     <div class="card-header-custom d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -105,6 +127,17 @@ document.addEventListener('DOMContentLoaded', function () {
                     row.style.display = 'none';
                 }
             });
+        });
+    }
+
+    const downloadBtn = document.getElementById('downloadUserReportBtn');
+    const userSelect = document.getElementById('reportUserSelect');
+    if (downloadBtn && userSelect) {
+        downloadBtn.addEventListener('click', function () {
+            const uid = userSelect.value;
+            if (uid) {
+                window.location.href = `/admin/user/${uid}/export-reports-csv`;
+            }
         });
     }
 });
