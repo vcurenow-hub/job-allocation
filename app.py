@@ -1633,9 +1633,23 @@ def upload_records():
 
             done_set = set()
             if already_done_text:
-                done_records, _ = parse_records_from_rows(already_done_text.splitlines(), raw_text=already_done_text)
-                for dr in done_records:
-                    done_set.add((dr["mat_no"], dr["course_code"]))
+                try:
+                    done_records, _ = parse_records_from_rows(already_done_text.splitlines(), raw_text=already_done_text)
+                    for dr in done_records:
+                        done_set.add((dr["mat_no"], dr["course_code"]))
+                except Exception:
+                    pass
+
+                for line in already_done_text.splitlines():
+                    line_lower = line.strip().lower()
+                    if not line_lower:
+                        continue
+                    mats = re.findall(r'nou\d{9}', line_lower)
+                    courses = re.findall(r'[a-z]{3}\d{3}', line_lower)
+                    if mats and courses:
+                        for m in mats:
+                            for c in courses:
+                                done_set.add((m, c.upper()))
 
             added = 0
             duplicates = 0
@@ -1670,6 +1684,11 @@ def upload_records():
                     ))
                     added += 1
                 except sqlite3.IntegrityError:
+                    if is_done:
+                        con.execute("""
+                            UPDATE jobs SET status='finished'
+                            WHERE session_id=? AND mat_no=? AND course_code=?
+                        """, (target_sid, r["mat_no"], r["course_code"]))
                     duplicates += 1
 
             con.commit()
