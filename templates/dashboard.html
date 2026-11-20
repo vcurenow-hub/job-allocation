@@ -136,7 +136,7 @@
                                         </div>
                                         {% if a.multi_count and a.multi_count > 1 %}
                                             <div class="alert alert-warning p-2 mt-2 mb-0 small fw-bold border-warning">
-                                                <i class="bi bi-laptop me-1"></i> 💻 SAME COMPUTER: Student has {{ a.multi_count }} courses at this session. Use the same computer station!
+                                                <i class="bi bi-laptop me-1"></i> 💻 SAME COMPUTER: Student has {{ a.multi_count }} courses in this session: <span class="badge bg-dark ms-1">{{ a.all_student_courses }}</span>. Mark all courses on the same computer station!
                                             </div>
                                         {% endif %}
                                     {% else %}

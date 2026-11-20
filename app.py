@@ -497,50 +497,20 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
     if not session_row or not session_row["is_open"]:
         raise ValueError("This session table is closed. Allocations have stopped.")
 
-    total_units_allocated = 0
     total_jobs_allocated = 0
-    multi_course_mats_allocated = 0
-    MAX_MULTI_COURSE_MATS = 2
 
-    while total_units_allocated < requested_count and total_jobs_allocated < requested_count:
-        if multi_course_mats_allocated < MAX_MULTI_COURSE_MATS:
-            mat_row = con.execute("""
-                SELECT j.mat_no FROM jobs j
-                JOIN work_sessions s ON s.id = j.session_id
-                WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
-                  AND j.id NOT IN (
-                      SELECT job_id FROM allocations WHERE status != 'reported'
-                  )
-                GROUP BY j.mat_no
-                ORDER BY MAX(j.is_priority) DESC, RANDOM()
-                LIMIT 1
-            """, (session_id,)).fetchone()
-        else:
-            mat_row = con.execute("""
-                SELECT j.mat_no FROM jobs j
-                JOIN work_sessions s ON s.id = j.session_id
-                WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
-                  AND j.id NOT IN (
-                      SELECT job_id FROM allocations WHERE status != 'reported'
-                  )
-                GROUP BY j.mat_no
-                HAVING COUNT(*) = 1
-                ORDER BY MAX(j.is_priority) DESC, RANDOM()
-                LIMIT 1
-            """, (session_id,)).fetchone()
-
-            if not mat_row:
-                mat_row = con.execute("""
-                    SELECT j.mat_no FROM jobs j
-                    JOIN work_sessions s ON s.id = j.session_id
-                    WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
-                      AND j.id NOT IN (
-                          SELECT job_id FROM allocations WHERE status != 'reported'
-                      )
-                    GROUP BY j.mat_no
-                    ORDER BY MAX(j.is_priority) DESC, RANDOM()
-                    LIMIT 1
-                """, (session_id,)).fetchone()
+    while total_jobs_allocated < requested_count:
+        mat_row = con.execute("""
+            SELECT j.mat_no FROM jobs j
+            JOIN work_sessions s ON s.id = j.session_id
+            WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
+              AND j.id NOT IN (
+                  SELECT job_id FROM allocations WHERE status != 'reported'
+              )
+            GROUP BY j.mat_no
+            ORDER BY MAX(j.is_priority) DESC, RANDOM()
+            LIMIT 1
+        """, (session_id,)).fetchone()
 
         if not mat_row:
             break
@@ -568,18 +538,6 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
         if not mat_jobs:
             continue
 
-        is_multi_course = len(mat_jobs) > 1
-
-        if is_multi_course and multi_course_mats_allocated >= MAX_MULTI_COURSE_MATS:
-            continue
-
-        if total_jobs_allocated + len(mat_jobs) > requested_count:
-            if is_multi_course:
-                continue
-            else:
-                mat_jobs = mat_jobs[:(requested_count - total_jobs_allocated)]
-
-        allocated_in_round = 0
         for mj in mat_jobs:
             existing = con.execute("""
                 SELECT 1 FROM allocations WHERE job_id = ? AND status != 'reported'
@@ -589,21 +547,15 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
 
             create_allocation(con, mj["id"], user_id, manual=manual, admin_id=admin_id)
             total_jobs_allocated += 1
-            allocated_in_round += 1
 
-        if allocated_in_round > 0:
-            total_units_allocated += 1
-            if is_multi_course:
-                multi_course_mats_allocated += 1
-
-        remaining_unique = con.execute("""
+        remaining_mats = con.execute("""
             SELECT COUNT(DISTINCT j.mat_no) AS n FROM jobs j
             JOIN work_sessions s ON s.id = j.session_id
             WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
               AND j.id NOT IN (SELECT job_id FROM allocations WHERE status != 'reported')
         """, (session_id,)).fetchone()["n"]
 
-        if remaining_unique == 0 or total_units_allocated >= requested_count or total_jobs_allocated >= requested_count:
+        if remaining_mats == 0 or total_jobs_allocated >= requested_count:
             break
 
     return total_jobs_allocated
@@ -644,7 +596,11 @@ def user_allocation_rows(con, user_id):
                (SELECT COUNT(DISTINCT j2.course_code)
                 FROM allocations a2 JOIN jobs j2 ON j2.id = a2.job_id
                 WHERE j2.session_id = j.session_id AND j2.mat_no = j.mat_no
-                  AND a2.user_id = a.user_id AND a2.status != 'reported') AS multi_count
+                  AND a2.user_id = a.user_id AND a2.status != 'reported') AS multi_count,
+               (SELECT GROUP_CONCAT(DISTINCT j3.course_code)
+                FROM allocations a3 JOIN jobs j3 ON j3.id = a3.job_id
+                WHERE j3.session_id = j.session_id AND j3.mat_no = j.mat_no
+                  AND a3.user_id = a.user_id AND a3.status != 'reported') AS all_student_courses
         FROM allocations a
         JOIN jobs j ON j.id=a.job_id
         JOIN work_sessions s ON s.id=j.session_id
@@ -2326,7 +2282,7 @@ def admin_allocations():
 def admin_reports():
     con = get_db()
     reports = con.execute("""
-        SELECT r.*,u.username,j.mat_no,j.course_code,s.name AS session_name,
+        SELECT r.*,u.username,j.mat_no,j.course_code,j.student_name,j.department,s.name AS session_name,
                a.status AS allocation_status
         FROM reports r
         JOIN users u ON u.id=r.user_id
@@ -2343,7 +2299,11 @@ def admin_reports():
         ORDER BY u.username
     """).fetchall()
 
-    return render_template("admin/reports.html", user=current_user(), reports=reports, reporting_users=reporting_users)
+    approved_users = con.execute("""
+        SELECT id, username FROM users WHERE role='user' AND approved=1 AND active=1 ORDER BY username
+    """).fetchall()
+
+    return render_template("admin/reports.html", user=current_user(), reports=reports, reporting_users=reporting_users, approved_users=approved_users)
 
 
 @app.route("/admin/export-reports-csv")
@@ -2351,15 +2311,31 @@ def admin_reports():
 @admin_required
 def export_reports_csv():
     con = get_db()
-    reports = con.execute("""
-        SELECT r.id, u.username, s.name AS session_name, j.mat_no, j.course_code,
-               r.reason, r.explanation, r.status, r.created_at
-        FROM reports r
-        JOIN users u ON u.id = r.user_id
-        JOIN jobs j ON j.id = r.job_id
-        JOIN work_sessions s ON s.id = j.session_id
-        ORDER BY r.id DESC
-    """).fetchall()
+    reason_filter = request.args.get("reason", "all").strip()
+
+    if reason_filter != "all" and reason_filter in REPORT_REASONS:
+        reports = con.execute("""
+            SELECT r.id, u.username, s.name AS session_name, j.mat_no, j.course_code,
+                   r.reason, r.explanation, r.status, r.created_at
+            FROM reports r
+            JOIN users u ON u.id = r.user_id
+            JOIN jobs j ON j.id = r.job_id
+            JOIN work_sessions s ON s.id = j.session_id
+            WHERE r.reason = ?
+            ORDER BY r.id DESC
+        """, (reason_filter,)).fetchall()
+        filename_part = secure_filename(reason_filter)
+    else:
+        reports = con.execute("""
+            SELECT r.id, u.username, s.name AS session_name, j.mat_no, j.course_code,
+                   r.reason, r.explanation, r.status, r.created_at
+            FROM reports r
+            JOIN users u ON u.id = r.user_id
+            JOIN jobs j ON j.id = r.job_id
+            JOIN work_sessions s ON s.id = j.session_id
+            ORDER BY r.id DESC
+        """).fetchall()
+        filename_part = "all"
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -2370,7 +2346,7 @@ def export_reports_csv():
     return Response(
         output.getvalue(),
         mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=reported_cases_export.csv"}
+        headers={"Content-Disposition": f"attachment; filename=reported_cases_{filename_part}.csv"}
     )
 
 
@@ -2419,6 +2395,89 @@ def resolve_report(rid):
     con.commit()
     audit(current_user()["id"], "RESOLVE_REPORT", f"Report ID: {rid}")
     flash("Report marked as resolved.", "success")
+    return redirect(url_for("admin_reports"))
+
+
+@app.route("/admin/report/<int:rid>/reallocate", methods=["POST"])
+@login_required
+@admin_required
+def admin_reallocate_report(rid):
+    con = get_db()
+    report = con.execute("SELECT * FROM reports WHERE id=?", (rid,)).fetchone()
+    if not report:
+        abort(404)
+
+    new_user_id = request.form.get("new_user_id")
+    if not new_user_id:
+        flash("Please select a user to reallocate this reported job to.", "warning")
+        return redirect(url_for("admin_reports"))
+
+    try:
+        new_user_id = int(new_user_id)
+        con.execute("BEGIN IMMEDIATE")
+
+        replacement_id = create_allocation(con, report["job_id"], new_user_id, manual=True, admin_id=current_user()["id"])
+
+        con.execute("""
+            UPDATE reports SET status='resolved', replacement_allocation_id=?, resolved_at=?
+            WHERE id=?
+        """, (replacement_id, now(), rid))
+
+        con.commit()
+        audit(current_user()["id"], "REALLOCATE_REPORTED_JOB", f"Report #{rid} reallocated to user ID {new_user_id}")
+        flash("Reported job reallocated successfully! Case resolved and removed from open reports.", "success")
+    except Exception as e:
+        con.rollback()
+        flash(f"Error reallocating reported job: {e}", "danger")
+
+    return redirect(url_for("admin_reports"))
+
+
+@app.route("/admin/report/<int:rid>/release", methods=["POST"])
+@login_required
+@admin_required
+def admin_release_report(rid):
+    con = get_db()
+    report = con.execute("SELECT * FROM reports WHERE id=?", (rid,)).fetchone()
+    if not report:
+        abort(404)
+
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        con.execute("UPDATE jobs SET status='available' WHERE id=?", (report["job_id"],))
+        con.execute("UPDATE reports SET status='resolved', resolved_at=? WHERE id=?", (now(), rid))
+        con.commit()
+        audit(current_user()["id"], "RELEASE_REPORTED_JOB", f"Report #{rid} released back to available pool.")
+        flash("Reported job released back to available pool. Case resolved and removed from open reports.", "success")
+    except Exception as e:
+        con.rollback()
+        flash(f"Error releasing reported job: {e}", "danger")
+
+    return redirect(url_for("admin_reports"))
+
+
+@app.route("/admin/report/<int:rid>/delete", methods=["POST"])
+@login_required
+@admin_required
+def admin_delete_report(rid):
+    con = get_db()
+    report = con.execute("SELECT * FROM reports WHERE id=?", (rid,)).fetchone()
+    if not report:
+        abort(404)
+
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        job_id = report["job_id"]
+        con.execute("DELETE FROM reports WHERE job_id=?", (job_id,))
+        con.execute("DELETE FROM allocations WHERE job_id=?", (job_id,))
+        con.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+        con.commit()
+        audit(current_user()["id"], "DELETE_REPORTED_JOB", f"Deleted reported job ID {job_id}")
+        flash("Reported job and all history deleted entirely.", "success")
+    except Exception as e:
+        con.rollback()
+        flash(f"Error deleting reported job: {e}", "danger")
+
     return redirect(url_for("admin_reports"))
 
 

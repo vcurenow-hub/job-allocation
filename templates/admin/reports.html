@@ -1,47 +1,40 @@
 {% extends "base.html" %}
 
-{% block title %}User Reports{% endblock %}
+{% block title %}User Reports & Issue Resolution{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
     <div>
-        <h2 class="fw-bold mb-1"><i class="bi bi-flag text-danger me-2"></i>User Reported Issues</h2>
-        <p class="text-muted mb-0">Review reported malfunctioning jobs, unregistered courses, or invalid matriculation numbers.</p>
+        <h2 class="fw-bold mb-1"><i class="bi bi-flag text-danger me-2"></i>User Reported Issues & Reallocation</h2>
+        <p class="text-muted mb-0">Reallocate reported jobs, release slots back to the pool, edit records, or download reports by specific issue reasons.</p>
     </div>
     <div class="d-flex gap-2 align-items-center flex-wrap">
-        <a href="{{ url_for('export_reports_csv') }}" class="btn btn-outline-success fw-bold shadow-sm">
-            <i class="bi bi-download me-1"></i> Download All Reports CSV
-        </a>
-    </div>
-</div>
-
-<!-- Per-User Report Download Card -->
-{% if reporting_users %}
-    <div class="card card-custom p-3 mb-4 bg-light border">
-        <div class="d-flex align-items-center justify-content-between flex-wrap gap-3">
-            <div>
-                <h6 class="fw-bold mb-1 text-dark"><i class="bi bi-person-lines-fill text-primary me-2"></i>Download Reports by Specific User</h6>
-                <p class="text-muted small mb-0">Select a user below to export and download only their submitted reports.</p>
-            </div>
-            <div class="d-flex gap-2 align-items-center flex-wrap">
-                <select id="reportUserSelect" class="form-select form-select-sm" style="width: 220px;">
-                    {% for ru in reporting_users %}
-                        <option value="{{ ru.id }}">{{ ru.username }}</option>
-                    {% endfor %}
-                </select>
-                <button type="button" id="downloadUserReportBtn" class="btn btn-sm btn-primary fw-bold">
-                    <i class="bi bi-download me-1"></i> Download User CSV
-                </button>
-            </div>
+        <div class="input-group">
+            <select id="reasonFilterSelect" class="form-select fw-bold border-danger text-danger" style="width: 250px;">
+                <option value="all" selected>🌐 All Report Reasons</option>
+                <option value="Course not registered">📌 Course not registered</option>
+                <option value="Invalid matriculation number">⚠️ Invalid matriculation number</option>
+                <option value="System malfunctioning">⚙️ System malfunctioning</option>
+            </select>
+            <button type="button" id="downloadReasonReportBtn" class="btn btn-danger fw-bold">
+                <i class="bi bi-download me-1"></i> Download Reason CSV
+            </button>
         </div>
     </div>
-{% endif %}
+</div>
 
 <div class="card card-custom">
     <div class="card-header-custom d-flex justify-content-between align-items-center flex-wrap gap-2">
         <h5 class="mb-0 fw-bold"><i class="bi bi-flag me-2 text-danger"></i>Reports Directory</h5>
-        <div style="width: 300px;">
-            <input type="text" id="reportSearchInput" class="form-control form-control-sm" placeholder="Search user, mat no, course...">
+        <div class="d-flex gap-2 align-items-center flex-wrap">
+            <select id="statusFilterSelect" class="form-select form-select-sm fw-bold text-dark" style="width: 170px;">
+                <option value="all">All Statuses</option>
+                <option value="open" selected>🟡 Open Reports Only</option>
+                <option value="resolved">🟢 Resolved Reports</option>
+            </select>
+            <div style="width: 260px;">
+                <input type="text" id="reportSearchInput" class="form-control form-control-sm" placeholder="Search user, mat no, course...">
+            </div>
         </div>
     </div>
     <div class="table-responsive">
@@ -52,32 +45,31 @@
                     <th>User</th>
                     <th>Session</th>
                     <th>Mat / Course</th>
-                    <th>Reason</th>
-                    <th>Explanation</th>
+                    <th>Reason & Explanation</th>
                     <th>Replacement</th>
                     <th>Status</th>
-                    <th class="text-end">Action</th>
+                    <th class="text-end">Actions</th>
                 </tr>
             </thead>
             <tbody>
                 {% for r in reports %}
-                    <tr>
+                    <tr class="report-row" data-status="{{ r.status }}">
                         <td class="fw-bold text-muted">#{{ r.id }}</td>
-                        <td class="fw-semibold text-dark">{{ r.username }}</td>
-                        <td>{{ r.session_name }}</td>
+                        <td class="fw-semibold text-dark"><i class="bi bi-person me-1"></i>{{ r.username }}</td>
+                        <td><span class="badge bg-dark">{{ r.session_name }}</span></td>
                         <td>
                             <div><span class="font-monospace text-primary fw-bold" style="cursor: pointer;" title="Click to copy" onclick="copyMat('{{ r.mat_no }}', this)">{{ r.mat_no }} <i class="bi bi-clipboard ms-1 text-muted" style="font-size: 0.8rem;"></i></span></div>
-                            <div><span class="badge bg-dark">{{ r.course_code }}</span></div>
+                            <div><span class="badge bg-secondary">{{ r.course_code }}</span></div>
                         </td>
                         <td>
-                            <span class="badge bg-danger fs-6 px-2 py-1">{{ r.reason }}</span>
+                            <span class="badge bg-danger fs-6 px-2 py-1 report-reason-badge mb-1">{{ r.reason }}</span>
+                            <div class="small text-dark fw-medium" style="max-width: 250px;">{{ r.explanation }}</div>
                         </td>
-                        <td style="max-width: 250px;" class="small text-dark fw-medium">{{ r.explanation }}</td>
                         <td>
                             {% if r.replacement_allocation_id %}
-                                <span class="badge bg-success">#{{ r.replacement_allocation_id }}</span>
+                                <span class="badge bg-success">Replacement #{{ r.replacement_allocation_id }}</span>
                             {% else %}
-                                <span class="text-muted">None</span>
+                                <span class="text-muted small">None</span>
                             {% endif %}
                         </td>
                         <td>
@@ -88,21 +80,123 @@
                             {% endif %}
                         </td>
                         <td class="text-end">
-                            {% if r.status == 'open' %}
-                                <form method="post" action="{{ url_for('resolve_report', rid=r.id) }}">
-                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                    <button type="submit" class="btn btn-sm btn-outline-success fw-bold">
-                                        <i class="bi bi-check-lg me-1"></i> Resolve
-                                    </button>
-                                </form>
-                            {% else %}
-                                <small class="text-muted fw-semibold"><i class="bi bi-check-all"></i> Done</small>
-                            {% endif %}
+                            <div class="dropdown">
+                                <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                                    Actions
+                                </button>
+                                <ul class="dropdown-menu dropdown-menu-end shadow">
+                                    <li>
+                                        <button type="button" class="dropdown-item text-primary fw-bold" data-bs-toggle="modal" data-bs-target="#reallocateReportModal{{ r.id }}">
+                                            <i class="bi bi-person-bounding-box me-2"></i> Reallocate to User
+                                        </button>
+                                    </li>
+                                    <li>
+                                        <form method="post" action="{{ url_for('admin_release_report', rid=r.id) }}" onsubmit="return confirm('Release reported job back to unallocated pool and resolve case?');">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <button type="submit" class="dropdown-item text-warning">
+                                                <i class="bi bi-arrow-counterclockwise me-2"></i> Release to Pool & Resolve
+                                            </button>
+                                        </form>
+                                    </li>
+                                    <li>
+                                        <button type="button" class="dropdown-item text-dark" data-bs-toggle="modal" data-bs-target="#editReportJobModal{{ r.id }}">
+                                            <i class="bi bi-pencil-square me-2"></i> Edit Record
+                                        </button>
+                                    </li>
+                                    {% if r.status == 'open' %}
+                                        <li>
+                                            <form method="post" action="{{ url_for('resolve_report', rid=r.id) }}">
+                                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                <button type="submit" class="dropdown-item text-success">
+                                                    <i class="bi bi-check-circle me-2"></i> Mark Resolved
+                                                </button>
+                                            </form>
+                                        </li>
+                                    {% endif %}
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li>
+                                        <form method="post" action="{{ url_for('admin_delete_report', rid=r.id) }}" onsubmit="return confirm('Delete reported job and all history entirely?');">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <button type="submit" class="dropdown-item text-danger">
+                                                <i class="bi bi-trash me-2"></i> Delete Job Entirely
+                                            </button>
+                                        </form>
+                                    </li>
+                                </ul>
+                            </div>
                         </td>
                     </tr>
+
+                    <!-- Edit Record Modal for Report Row {{ r.id }} -->
+                    <div class="modal fade" id="editReportJobModal{{ r.id }}" tabindex="-1" aria-hidden="true">
+                        <div class="modal-dialog">
+                            <div class="modal-content">
+                                <form method="post" action="{{ url_for('admin_edit_job', job_id=r.job_id) }}">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <div class="modal-header bg-dark text-white">
+                                        <h5 class="modal-title fw-bold">Edit Reported Record #{{ r.job_id }}</h5>
+                                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                                    </div>
+                                    <div class="modal-body text-start">
+                                        <div class="mb-3">
+                                            <label class="form-label font-semibold">Matriculation Number</label>
+                                            <input type="text" name="mat_no" class="form-control" value="{{ r.mat_no }}" pattern="nou[0-9]{9}" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label font-semibold">Course Code</label>
+                                            <input type="text" name="course_code" class="form-control" value="{{ r.course_code }}" pattern="[A-Za-z]{3}[0-9]{3}" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label font-semibold">Student Name</label>
+                                            <input type="text" name="student_name" class="form-control" value="{{ r.student_name or '' }}">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label font-semibold">Department</label>
+                                            <input type="text" name="department" class="form-control" value="{{ r.department or '' }}">
+                                        </div>
+                                    </div>
+                                    <div class="modal-footer">
+                                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                        <button type="submit" class="btn btn-primary fw-bold">Save Changes</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Reallocate Modal for Report Row {{ r.id }} -->
+                    <div class="modal fade" id="reallocateReportModal{{ r.id }}" tabindex="-1" aria-hidden="true">
+                        <div class="modal-dialog">
+                            <div class="modal-content">
+                                <form method="post" action="{{ url_for('admin_reallocate_report', rid=r.id) }}">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <div class="modal-header bg-primary text-white">
+                                        <h5 class="modal-title fw-bold">Reallocate Reported Job #{{ r.job_id }} ({{ r.mat_no }} / {{ r.course_code }})</h5>
+                                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                                    </div>
+                                    <div class="modal-body text-start">
+                                        <div class="mb-3">
+                                            <label class="form-label font-semibold">Select New User</label>
+                                            <select name="new_user_id" class="form-select" required>
+                                                <option value="">Select user...</option>
+                                                {% for u in approved_users %}
+                                                    <option value="{{ u.id }}">{{ u.username }}</option>
+                                                {% endfor %}
+                                            </select>
+                                            <div class="form-text mt-1">Reallocating will assign this job to the selected user and automatically mark this report as resolved.</div>
+                                        </div>
+                                    </div>
+                                    <div class="modal-footer">
+                                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                        <button type="submit" class="btn btn-primary fw-bold">Reallocate & Resolve Case</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
                 {% else %}
                     <tr>
-                        <td colspan="9" class="text-center py-4 text-muted">No reports submitted yet.</td>
+                        <td colspan="8" class="text-center py-4 text-muted">No reports submitted yet.</td>
                     </tr>
                 {% endfor %}
             </tbody>
@@ -115,29 +209,44 @@
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     const searchInput = document.getElementById('reportSearchInput');
-    const rows = document.querySelectorAll('#reportsTable tbody tr');
-    if (searchInput) {
-        searchInput.addEventListener('input', function () {
-            const query = this.value.toLowerCase().trim();
-            rows.forEach(row => {
-                const text = row.textContent.toLowerCase();
-                if (text.includes(query)) {
-                    row.style.display = '';
-                } else {
-                    row.style.display = 'none';
-                }
-            });
+    const statusSelect = document.getElementById('statusFilterSelect');
+    const reasonSelect = document.getElementById('reasonFilterSelect');
+    const rows = document.querySelectorAll('#reportsTable tbody tr.report-row');
+
+    function filterTable() {
+        const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
+        const selectedStatus = statusSelect ? statusSelect.value : 'all';
+        const selectedReason = reasonSelect ? reasonSelect.value : 'all';
+
+        rows.forEach(row => {
+            const text = row.textContent.toLowerCase();
+            const rowStatus = row.dataset.status;
+            const reasonBadge = row.querySelector('.report-reason-badge');
+            const reasonText = reasonBadge ? reasonBadge.textContent.trim() : '';
+
+            const matchesSearch = !query || text.includes(query);
+            const matchesStatus = (selectedStatus === 'all' || rowStatus === selectedStatus);
+            const matchesReason = (selectedReason === 'all' || reasonText === selectedReason);
+
+            if (matchesSearch && matchesStatus && matchesReason) {
+                row.style.display = '';
+            } else {
+                row.style.display = 'none';
+            }
         });
     }
 
-    const downloadBtn = document.getElementById('downloadUserReportBtn');
-    const userSelect = document.getElementById('reportUserSelect');
-    if (downloadBtn && userSelect) {
-        downloadBtn.addEventListener('click', function () {
-            const uid = userSelect.value;
-            if (uid) {
-                window.location.href = `/admin/user/${uid}/export-reports-csv`;
-            }
+    if (searchInput) searchInput.addEventListener('input', filterTable);
+    if (statusSelect) statusSelect.addEventListener('change', filterTable);
+    if (reasonSelect) reasonSelect.addEventListener('change', filterTable);
+
+    filterTable();
+
+    const downloadReasonBtn = document.getElementById('downloadReasonReportBtn');
+    if (downloadReasonBtn && reasonSelect) {
+        downloadReasonBtn.addEventListener('click', function () {
+            const val = reasonSelect.value;
+            window.location.href = `/admin/export-reports-csv?reason=${encodeURIComponent(val)}`;
         });
     }
 });
