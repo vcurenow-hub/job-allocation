@@ -304,6 +304,17 @@ def init_db():
             VALUES (?, ?)
         """, (name, sequence))
 
+    try:
+        con.execute("""
+            UPDATE jobs SET status='available'
+            WHERE status='assigned' AND id NOT IN (
+                SELECT job_id FROM allocations WHERE status IN ('allocated', 'shown', 'started', 'finished', 'scored')
+            )
+        """)
+        con.commit()
+    except Exception:
+        pass
+
     con.commit()
     con.close()
 
@@ -542,7 +553,6 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
         """, (session_id, mat_no)).fetchone()
 
         if already_allocated_mat:
-            con.execute("UPDATE jobs SET status='assigned' WHERE session_id=? AND mat_no=?", (session_id, mat_no))
             continue
 
         mat_jobs = con.execute("""
@@ -561,12 +571,10 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
         is_multi_course = len(mat_jobs) > 1
 
         if is_multi_course and multi_course_mats_allocated >= MAX_MULTI_COURSE_MATS:
-            con.execute("UPDATE jobs SET status='assigned' WHERE session_id=? AND mat_no=?", (session_id, mat_no))
             continue
 
         if total_jobs_allocated + len(mat_jobs) > requested_count:
             if is_multi_course:
-                con.execute("UPDATE jobs SET status='assigned' WHERE session_id=? AND mat_no=?", (session_id, mat_no))
                 continue
             else:
                 mat_jobs = mat_jobs[:(requested_count - total_jobs_allocated)]
@@ -577,7 +585,6 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
                 SELECT 1 FROM allocations WHERE job_id = ? AND status != 'reported'
             """, (mj["id"],)).fetchone()
             if existing:
-                con.execute("UPDATE jobs SET status='assigned' WHERE id=?", (mj["id"],))
                 continue
 
             create_allocation(con, mj["id"], user_id, manual=manual, admin_id=admin_id)
@@ -716,18 +723,24 @@ Text to parse:
 
 def parse_records_from_rows(rows_data, raw_text=""):
     """
-    Intelligent AI Record Parser & Arranger:
-    1. Invokes Gemini AI if GEMINI_API_KEY environment variable is configured.
-    2. Fallback to built-in AI Heuristic Engine (tracks section headers, OCR healing, session bucketing).
+    Ultra-Robust AI & Heuristic Multi-Column Record Parser:
+    - Tracks active Session Time headers (e.g. 8:30AM, 11:00AM, 2:00PM).
+    - Tracks active Course Section headers (e.g. BED111, BUA107, GST204).
+    - Parses tab-separated (\t) and column-structured tables.
+    - Generates clean unique identifiers if matriculation numbers are missing so ZERO rows are ever skipped.
     """
     if raw_text:
         gemini_items = parse_records_with_gemini(raw_text)
         if gemini_items:
             records = []
             corrected_count = 0
-            for item in gemini_items:
+            for idx, item in enumerate(gemini_items):
                 mat, mat_valid, mat_corrected = intelligent_cleanse_mat(str(item.get("mat_no", "")))
                 course, course_valid, course_corrected = intelligent_cleanse_course(str(item.get("course_code", "")))
+                if not mat_valid:
+                    sig = str(item.get("signature_id", "")).strip()
+                    mat = f"nou{sig.replace('-', '').lower()[:9]}" if sig else f"nou0000{idx+1:05d}"
+                    mat_valid = True
                 if mat_valid and course_valid:
                     if mat_corrected or course_corrected:
                         corrected_count += 1
@@ -740,20 +753,19 @@ def parse_records_from_rows(rows_data, raw_text=""):
                         "department": str(item.get("department", "")).strip(),
                         "time_str": str(item.get("session_time", "")).strip(),
                         "session_bucket": session_bucket,
-                        "source": f"{mat} {course} {item.get('session_time', '')}",
+                        "source": f"{mat} {course}",
                     })
-            records.sort(key=lambda r: (normalize_time_key(r["time_str"]), r["mat_no"], r["course_code"]))
-            unique = {}
-            for r in records:
-                unique[(r["mat_no"], r["course_code"])] = r
-            return list(unique.values()), corrected_count
+            if records:
+                return records, corrected_count
 
-    # Built-in AI Heuristic Parser
+    # Built-in AI Heuristic State Machine Parser
     records = []
     current_time_str = ""
+    current_course_header = ""
     corrected_count = 0
+    generated_counter = 100000000
 
-    for item in rows_data:
+    for idx, item in enumerate(rows_data):
         if isinstance(item, dict):
             raw_mat = str(item.get("mat_no", ""))
             raw_course = str(item.get("course_code", ""))
@@ -767,33 +779,55 @@ def parse_records_from_rows(rows_data, raw_text=""):
             if not line:
                 continue
 
+            # Skip table header title row (e.g. S/N SIGNATURE ID NAME MAT. NO...)
+            if "MAT." in line.upper() and "COURSE" in line.upper():
+                continue
+
             times = TIME_PATTERN.findall(line)
             mats = MAT_HEAL_PATTERN.findall(line)
             courses = COURSE_HEAL_PATTERN.findall(line.upper())
 
-            # Section header detection (e.g. "8:30AM", "11AM", "2PM")
+            # 1. Session Time Header detection (e.g. "8:30AM", "11AM", "2PM")
             if times and not mats and not courses:
                 current_time_str = times[0].strip()
                 continue
 
-            if not mats or not courses:
+            parts = [p.strip() for p in line.split("\t")] if "\t" in line else [p.strip() for p in line.split("  ") if p.strip()]
+            non_empty_parts = [p for p in parts if p]
+
+            # 2. Course Section Header detection (e.g. "BED111", "BUA107", "GST204" on header line)
+            if courses and not mats and len(non_empty_parts) <= 1:
+                current_course_header = courses[0]
                 continue
 
-            raw_mat = mats[0]
-            raw_course = courses[0]
+            raw_mat = mats[0] if mats else ""
+            raw_course = courses[0] if courses else current_course_header
             time_str = times[0].strip() if times else current_time_str
 
-            clean_line = line
-            clean_line = MAT_HEAL_PATTERN.sub("", clean_line)
-            clean_line = COURSE_HEAL_PATTERN.sub("", clean_line)
-            if time_str:
-                clean_line = clean_line.replace(time_str, "")
-            clean_line = re.sub(r"[|,\-:]+", " ", clean_line).strip()
-
-            student_name = clean_line
-            department = ""
             signature_id = ""
+            student_name = ""
+            department = ""
             source = line
+
+            if len(parts) >= 3:
+                for p in parts:
+                    if p.startswith("SIG-") or "SIG" in p:
+                        signature_id = p
+                    elif MAT_HEAL_PATTERN.search(p):
+                        raw_mat = MAT_HEAL_PATTERN.search(p).group(0)
+                    elif COURSE_HEAL_PATTERN.search(p.upper()) and not raw_course:
+                        raw_course = COURSE_HEAL_PATTERN.search(p.upper()).group(0)
+
+            if not raw_mat:
+                if signature_id:
+                    clean_sig = re.sub(r"[^a-zA-Z0-9]", "", signature_id).lower()
+                    raw_mat = f"nou{clean_sig[:9].ljust(9, '0')}"
+                else:
+                    generated_counter += 1
+                    raw_mat = f"nou{generated_counter}"
+
+            if not raw_course and current_course_header:
+                raw_course = current_course_header
 
         # AI Smart Healing & Validation
         mat, mat_valid, mat_corrected = intelligent_cleanse_mat(raw_mat)
@@ -818,15 +852,7 @@ def parse_records_from_rows(rows_data, raw_text=""):
             "source": source,
         })
 
-    # Sort records chronologically by Session Bucket -> Mat No -> Course Code
-    records.sort(key=lambda r: (normalize_time_key(r["time_str"]), r["mat_no"], r["course_code"]))
-
-    unique = {}
-    for r in records:
-        unique[(r["mat_no"], r["course_code"])] = r
-
-    final_list = list(unique.values())
-    return final_list, corrected_count
+    return records, corrected_count
 
 
 def extract_upload(file):
