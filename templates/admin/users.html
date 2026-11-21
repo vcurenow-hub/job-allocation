@@ -6,7 +6,7 @@
 <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
     <div>
         <h2 class="fw-bold mb-1"><i class="bi bi-people text-primary me-2"></i>User Management & Active Workloads</h2>
-        <p class="text-muted mb-0">Approve accounts, suspend/reactivate access, and monitor active jobs, start times, and live active durations for each user.</p>
+        <p class="text-muted mb-0">Approve accounts, set custom job capacity limits, block/unblock allocations, and monitor active workloads.</p>
     </div>
     <div>
         <form method="post" action="{{ url_for('admin_approve_all_users') }}" onsubmit="return confirm('Approve ALL pending user sign-up accounts?');">
@@ -31,10 +31,9 @@
                 <tr>
                     <th>Username</th>
                     <th>Email Address</th>
-                    <th>Active Workload, Start Times & Duration</th>
-                    <th>Role</th>
-                    <th>Approval Status</th>
-                    <th>Account Status</th>
+                    <th>Active Workload & Duration</th>
+                    <th>Custom Limit & Allocation Status</th>
+                    <th>Role & Account</th>
                     <th class="text-end">Actions</th>
                 </tr>
             </thead>
@@ -68,57 +67,117 @@
                             {% endif %}
                         </td>
                         <td>
-                            {% if u.role == 'admin' %}
-                                <span class="badge bg-danger px-2 py-1">ADMINISTRATOR</span>
-                            {% else %}
-                                <span class="badge bg-info px-2 py-1">USER</span>
-                            {% endif %}
+                            <div class="mb-1">
+                                {% if u.allocations_blocked %}
+                                    <span class="badge bg-danger px-2 py-1"><i class="bi bi-slash-circle me-1"></i>Allocations Blocked</span>
+                                {% else %}
+                                    <span class="badge bg-success px-2 py-1"><i class="bi bi-check-circle me-1"></i>Allocations Allowed</span>
+                                {% endif %}
+                            </div>
+                            <div class="small fw-bold text-dark mt-1">
+                                Limit: <span class="badge bg-primary fs-6">{{ u.max_job_limit or 8 }} Jobs</span>
+                                <button class="btn btn-link btn-sm p-0 ms-1" text-decoration-none data-bs-toggle="modal" data-bs-target="#limitModal{{ u.id }}">Edit Limit</button>
+                            </div>
                         </td>
                         <td>
-                            {% if u.approved %}
-                                <span class="badge bg-success px-2 py-1"><i class="bi bi-check me-1"></i>Approved</span>
-                            {% else %}
-                                <span class="badge bg-warning text-dark px-2 py-1"><i class="bi bi-clock me-1"></i>Pending</span>
-                            {% endif %}
-                        </td>
-                        <td>
-                            {% if u.active %}
-                                <span class="badge bg-primary px-2 py-1">Active</span>
-                            {% else %}
-                                <span class="badge bg-secondary px-2 py-1">Suspended</span>
-                            {% endif %}
+                            <div class="mb-1">
+                                {% if u.role == 'admin' %}
+                                    <span class="badge bg-danger px-2 py-1">ADMINISTRATOR</span>
+                                {% else %}
+                                    <span class="badge bg-info px-2 py-1">USER</span>
+                                {% endif %}
+                            </div>
+                            <div>
+                                {% if u.approved %}
+                                    <span class="badge bg-success px-2 py-1"><i class="bi bi-check me-1"></i>Approved</span>
+                                {% else %}
+                                    <span class="badge bg-warning text-dark px-2 py-1"><i class="bi bi-clock me-1"></i>Pending</span>
+                                {% endif %}
+                                {% if u.active %}
+                                    <span class="badge bg-primary px-2 py-1">Active</span>
+                                {% else %}
+                                    <span class="badge bg-secondary px-2 py-1">Suspended</span>
+                                {% endif %}
+                            </div>
                         </td>
                         <td class="text-end">
-                            <a href="{{ url_for('admin_user_allocations', uid=u.id) }}" class="btn btn-sm btn-outline-primary me-1">
-                                <i class="bi bi-table me-1"></i> Allocations Table
-                            </a>
-                            {% if u.role == 'user' and not u.approved %}
-                                <form class="d-inline" method="post" action="{{ url_for('approve_user', uid=u.id) }}">
-                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                    <button class="btn btn-sm btn-success me-1">
-                                        <i class="bi bi-person-check me-1"></i> Approve
-                                    </button>
-                                </form>
-                            {% endif %}
-                            {% if u.role == 'user' %}
-                                <form class="d-inline" method="post" action="{{ url_for('toggle_user', uid=u.id) }}">
-                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                    {% if u.active %}
-                                        <button class="btn btn-sm btn-outline-danger">
-                                            <i class="bi bi-slash-circle me-1"></i> Suspend
-                                        </button>
-                                    {% else %}
-                                        <button class="btn btn-sm btn-outline-success">
-                                            <i class="bi bi-check-circle me-1"></i> Activate
-                                        </button>
+                            <div class="dropdown">
+                                <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                                    Actions
+                                </button>
+                                <ul class="dropdown-menu dropdown-menu-end shadow">
+                                    <li>
+                                        <a href="{{ url_for('admin_user_allocations', uid=u.id) }}" class="dropdown-item text-primary">
+                                            <i class="bi bi-table me-2"></i> Allocations Table
+                                        </a>
+                                    </li>
+                                    {% if u.role == 'user' %}
+                                        <li>
+                                            <form method="post" action="{{ url_for('admin_toggle_allocation_block', uid=u.id) }}">
+                                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                <button type="submit" class="dropdown-item {% if u.allocations_blocked %}text-success{% else %}text-warning fw-bold{% endif %}">
+                                                    {% if u.allocations_blocked %}<i class="bi bi-check-circle me-2"></i>Allow Allocations{% else %}<i class="bi bi-slash-circle me-2"></i>Stop/Block Allocations{% endif %}
+                                                </button>
+                                            </form>
+                                        </li>
+                                        <li>
+                                            <button type="button" class="dropdown-item text-dark" data-bs-toggle="modal" data-bs-target="#limitModal{{ u.id }}">
+                                                <i class="bi bi-sliders me-2"></i> Set Max Job Limit
+                                            </button>
+                                        </li>
+                                        <li><hr class="dropdown-divider"></li>
+                                        {% if not u.approved %}
+                                            <li>
+                                                <form method="post" action="{{ url_for('approve_user', uid=u.id) }}">
+                                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                    <button type="submit" class="dropdown-item text-success fw-bold">
+                                                        <i class="bi bi-person-check me-2"></i> Approve Account
+                                                    </button>
+                                                </form>
+                                            </li>
+                                        {% endif %}
+                                        <li>
+                                            <form method="post" action="{{ url_for('toggle_user', uid=u.id) }}">
+                                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                <button type="submit" class="dropdown-item {% if u.active %}text-danger{% else %}text-success{% endif %}">
+                                                    {% if u.active %}<i class="bi bi-pause-circle me-2"></i>Suspend Account{% else %}<i class="bi bi-play-circle me-2"></i>Activate Account{% endif %}
+                                                </button>
+                                            </form>
+                                        </li>
                                     {% endif %}
-                                </form>
-                            {% endif %}
+                                </ul>
+                            </div>
                         </td>
                     </tr>
+
+                    <!-- Set Job Limit Modal for User {{ u.id }} -->
+                    <div class="modal fade" id="limitModal{{ u.id }}" tabindex="-1" aria-hidden="true">
+                        <div class="modal-dialog">
+                            <div class="modal-content">
+                                <form method="post" action="{{ url_for('admin_set_user_job_limit', uid=u.id) }}">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <div class="modal-header bg-primary text-white">
+                                        <h5 class="modal-title fw-bold">Set Max Active Job Limit: {{ u.username }}</h5>
+                                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                                    </div>
+                                    <div class="modal-body text-start">
+                                        <div class="mb-3">
+                                            <label class="form-label font-semibold">Custom Max Active Job Limit</label>
+                                            <input type="number" name="max_job_limit" class="form-control" value="{{ u.max_job_limit or 8 }}" min="1" max="100" required>
+                                            <div class="form-text">Specify the maximum number of active unsubmitted jobs this user can hold at a time (1 to 100).</div>
+                                        </div>
+                                    </div>
+                                    <div class="modal-footer">
+                                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                        <button type="submit" class="btn btn-primary fw-bold">Save Limit</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
                 {% else %}
                     <tr>
-                        <td colspan="7" class="text-center py-4 text-muted">No users found.</td>
+                        <td colspan="6" class="text-center py-4 text-muted">No users found.</td>
                     </tr>
                 {% endfor %}
             </tbody>

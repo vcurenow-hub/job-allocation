@@ -277,6 +277,16 @@
                                                             </button>
                                                         </li>
                                                         {% if r.allocation_id and r.assigned_user %}
+                                                            {% if r.allocation_status not in ['finished', 'scored'] %}
+                                                                <li>
+                                                                    <form method="post" action="{{ url_for('admin_mark_allocation_done', allocation_id=r.allocation_id) }}" onsubmit="return confirm('Mark job allocation for {{ r.assigned_user }} as DONE / Finished?');">
+                                                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                                        <button type="submit" class="dropdown-item text-success fw-bold">
+                                                                            <i class="bi bi-check-circle me-2"></i> Mark Job as Done
+                                                                        </button>
+                                                                    </form>
+                                                                </li>
+                                                            {% endif %}
                                                             <li>
                                                                 <form method="post" action="{{ url_for('admin_release_allocation', allocation_id=r.allocation_id) }}" onsubmit="return confirm('Release job back to unallocated pool awaiting allocation?');">
                                                                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

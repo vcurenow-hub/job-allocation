@@ -292,6 +292,16 @@ def init_db():
         except sqlite3.OperationalError:
             pass
 
+    for col, col_def in [
+        ("allocations_blocked", "INTEGER NOT NULL DEFAULT 0"),
+        ("max_job_limit", "INTEGER NOT NULL DEFAULT 8"),
+    ]:
+        try:
+            con.execute(f"ALTER TABLE users ADD COLUMN {col} {col_def}")
+            con.commit()
+        except sqlite3.OperationalError:
+            pass
+
     try:
         con.execute("ALTER TABLE jobs ADD COLUMN is_priority INTEGER NOT NULL DEFAULT 0")
         con.commit()
@@ -449,17 +459,34 @@ def current_allocation_session(con):
     """).fetchone()
 
 
-def available_job(con, session_id):
-    return con.execute("""
-        SELECT j.* FROM jobs j
-        JOIN work_sessions s ON s.id = j.session_id
-        WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
-          AND j.id NOT IN (
-              SELECT job_id FROM allocations WHERE status != 'reported'
-          )
-        ORDER BY j.is_priority DESC, RANDOM()
-        LIMIT 1
-    """, (session_id,)).fetchone()
+def available_job(con, session_id, user_id=None):
+    if user_id:
+        return con.execute("""
+            SELECT j.* FROM jobs j
+            JOIN work_sessions s ON s.id = j.session_id
+            WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
+              AND j.id NOT IN (
+                  SELECT job_id FROM allocations WHERE status != 'reported'
+              )
+              AND j.mat_no NOT IN (
+                  SELECT j2.mat_no FROM allocations a2
+                  JOIN jobs j2 ON j2.id = a2.job_id
+                  WHERE j2.session_id = ? AND a2.user_id != ? AND a2.status != 'reported'
+              )
+            ORDER BY j.is_priority DESC, RANDOM()
+            LIMIT 1
+        """, (session_id, session_id, user_id)).fetchone()
+    else:
+        return con.execute("""
+            SELECT j.* FROM jobs j
+            JOIN work_sessions s ON s.id = j.session_id
+            WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
+              AND j.id NOT IN (
+                  SELECT job_id FROM allocations WHERE status != 'reported'
+              )
+            ORDER BY j.is_priority DESC, RANDOM()
+            LIMIT 1
+        """, (session_id,)).fetchone()
 
 
 def create_allocation(con, job_id, user_id, manual=False,
@@ -498,33 +525,104 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
         raise ValueError("This session table is closed. Allocations have stopped.")
 
     total_jobs_allocated = 0
+    multi_course_mats_allocated = 0
+    MAX_MULTI_COURSE_MATS = 2
 
     while total_jobs_allocated < requested_count:
-        mat_row = con.execute("""
+        remaining_needed = requested_count - total_jobs_allocated
+        mat_no = None
+
+        # 1. First Priority: Check if user already owns any students with remaining unallocated courses in this session
+        own_mat_job = con.execute("""
             SELECT j.mat_no FROM jobs j
             JOIN work_sessions s ON s.id = j.session_id
             WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
               AND j.id NOT IN (
                   SELECT job_id FROM allocations WHERE status != 'reported'
               )
+              AND j.mat_no IN (
+                  SELECT j2.mat_no FROM allocations a2
+                  JOIN jobs j2 ON j2.id = a2.job_id
+                  WHERE j2.session_id = ? AND a2.user_id = ? AND a2.status != 'reported'
+              )
             GROUP BY j.mat_no
             ORDER BY MAX(j.is_priority) DESC, RANDOM()
             LIMIT 1
-        """, (session_id,)).fetchone()
+        """, (session_id, session_id, user_id)).fetchone()
 
-        if not mat_row:
-            break
+        if own_mat_job:
+            mat_no = own_mat_job["mat_no"]
+        else:
+            # 2. Second Priority (Multi-Course Scan): Scan for students with 2+ courses fitting within remaining_needed
+            if multi_course_mats_allocated < MAX_MULTI_COURSE_MATS and remaining_needed >= 2:
+                multi_mat_row = con.execute("""
+                    SELECT j.mat_no FROM jobs j
+                    JOIN work_sessions s ON s.id = j.session_id
+                    WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
+                      AND j.id NOT IN (
+                          SELECT job_id FROM allocations WHERE status != 'reported'
+                      )
+                      AND j.mat_no NOT IN (
+                          SELECT j2.mat_no FROM allocations a2
+                          JOIN jobs j2 ON j2.id = a2.job_id
+                          WHERE j2.session_id = ? AND a2.user_id != ? AND a2.status != 'reported'
+                      )
+                    GROUP BY j.mat_no
+                    HAVING COUNT(*) > 1 AND COUNT(*) <= ?
+                    ORDER BY MAX(j.is_priority) DESC, RANDOM()
+                    LIMIT 1
+                """, (session_id, session_id, user_id, remaining_needed)).fetchone()
 
-        mat_no = mat_row["mat_no"]
+                if multi_mat_row:
+                    mat_no = multi_mat_row["mat_no"]
 
-        already_allocated_mat = con.execute("""
-            SELECT 1 FROM allocations a JOIN jobs j ON j.id = a.job_id
-            WHERE j.session_id = ? AND j.mat_no = ? AND a.status != 'reported'
-        """, (session_id, mat_no)).fetchone()
+            # 3. Third Priority (or if MAX_MULTI_COURSE_MATS reached): Strictly scan for single-course students (COUNT(*) == 1)
+            if not mat_no:
+                single_mat_row = con.execute("""
+                    SELECT j.mat_no FROM jobs j
+                    JOIN work_sessions s ON s.id = j.session_id
+                    WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
+                      AND j.id NOT IN (
+                          SELECT job_id FROM allocations WHERE status != 'reported'
+                      )
+                      AND j.mat_no NOT IN (
+                          SELECT j2.mat_no FROM allocations a2
+                          JOIN jobs j2 ON j2.id = a2.job_id
+                          WHERE j2.session_id = ? AND a2.user_id != ? AND a2.status != 'reported'
+                      )
+                    GROUP BY j.mat_no
+                    HAVING COUNT(*) = 1
+                    ORDER BY MAX(j.is_priority) DESC, RANDOM()
+                    LIMIT 1
+                """, (session_id, session_id, user_id)).fetchone()
 
-        if already_allocated_mat:
-            con.execute("UPDATE jobs SET status='assigned' WHERE session_id=? AND mat_no=?", (session_id, mat_no))
-            continue
+                if single_mat_row:
+                    mat_no = single_mat_row["mat_no"]
+
+            # 4. Fallback: Pick any available student fitting within remaining_needed
+            if not mat_no:
+                mat_row = con.execute("""
+                    SELECT j.mat_no FROM jobs j
+                    JOIN work_sessions s ON s.id = j.session_id
+                    WHERE j.session_id=? AND s.is_open=1 AND j.status='available'
+                      AND j.id NOT IN (
+                          SELECT job_id FROM allocations WHERE status != 'reported'
+                      )
+                      AND j.mat_no NOT IN (
+                          SELECT j2.mat_no FROM allocations a2
+                          JOIN jobs j2 ON j2.id = a2.job_id
+                          WHERE j2.session_id = ? AND a2.user_id != ? AND a2.status != 'reported'
+                      )
+                    GROUP BY j.mat_no
+                    HAVING COUNT(*) <= ?
+                    ORDER BY MAX(j.is_priority) DESC, RANDOM()
+                    LIMIT 1
+                """, (session_id, session_id, user_id, remaining_needed)).fetchone()
+
+                if not mat_row:
+                    break
+
+                mat_no = mat_row["mat_no"]
 
         mat_jobs = con.execute("""
             SELECT j.* FROM jobs j
@@ -536,9 +634,12 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
             ORDER BY j.id
         """, (session_id, mat_no)).fetchall()
 
-        if not mat_jobs:
-            continue
+        if not mat_jobs or (total_jobs_allocated + len(mat_jobs) > requested_count):
+            break
 
+        is_multi_course = len(mat_jobs) > 1
+
+        allocated_in_round = 0
         for mj in mat_jobs:
             existing = con.execute("""
                 SELECT 1 FROM allocations WHERE job_id = ? AND status != 'reported'
@@ -548,6 +649,10 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
 
             create_allocation(con, mj["id"], user_id, manual=manual, admin_id=admin_id)
             total_jobs_allocated += 1
+            allocated_in_round += 1
+
+        if allocated_in_round > 0 and is_multi_course:
+            multi_course_mats_allocated += 1
 
         remaining_mats = con.execute("""
             SELECT COUNT(DISTINCT j.mat_no) AS n FROM jobs j
@@ -558,6 +663,10 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
 
         if remaining_mats == 0 or total_jobs_allocated >= requested_count:
             break
+
+    return total_jobs_allocated
+
+    return total_jobs_allocated
 
     return total_jobs_allocated
 
@@ -1118,6 +1227,12 @@ def request_jobs():
     if user["role"] != "user":
         abort(403)
 
+    if user.get("allocations_blocked"):
+        flash("Your account has been temporarily blocked from receiving new job allocations by the administrator.", "danger")
+        return redirect(url_for("dashboard"))
+
+    user_max_limit = user.get("max_job_limit") or 8
+
     con = get_db()
     open_sessions = con.execute("SELECT * FROM work_sessions WHERE is_open=1").fetchall()
 
@@ -1125,15 +1240,14 @@ def request_jobs():
         flash("There are no open allocation sessions.", "danger")
         return redirect(url_for("dashboard"))
 
-    # Restriction: User can hold up to 8 active unsubmitted jobs at a time
     active_unsubmitted = con.execute("""
         SELECT COUNT(*) AS n FROM allocations a
         JOIN jobs j ON j.id = a.job_id
         WHERE a.user_id = ? AND a.status IN ('allocated', 'shown', 'started')
     """, (user["id"],)).fetchone()["n"]
 
-    if active_unsubmitted >= 8:
-        flash("You have reached the limit of 8 active unsubmitted jobs. Please submit some before requesting new ones.", "warning")
+    if active_unsubmitted >= user_max_limit:
+        flash(f"You have reached your limit of {user_max_limit} active unsubmitted jobs. Please submit some before requesting new ones.", "warning")
         return redirect(url_for("dashboard"))
 
     try:
@@ -1145,7 +1259,6 @@ def request_jobs():
         flash("You cannot request more than 6 jobs at a time (maximum 6 jobs per request).", "warning")
         return redirect(url_for("dashboard"))
 
-    # Rate limit: max 6 jobs within 20 minutes interval
     twenty_mins_ago = datetime.now() - timedelta(minutes=20)
     twenty_mins_ago_str = twenty_mins_ago.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1159,8 +1272,8 @@ def request_jobs():
         flash(f"Rate limit: You have received {recent_allocated_count} job(s) in the last 20 minutes. You can request at most {max_allowed} more job(s) right now.", "warning")
         return redirect(url_for("dashboard"))
 
-    if active_unsubmitted + quantity > 8:
-        flash(f"You currently have {active_unsubmitted} active job(s). You can request at most {8 - active_unsubmitted} more job(s) (limit is 8 active).", "warning")
+    if active_unsubmitted + quantity > user_max_limit:
+        flash(f"You currently have {active_unsubmitted} active job(s). You can request at most {user_max_limit - active_unsubmitted} more job(s) (your limit is {user_max_limit} active).", "warning")
         return redirect(url_for("dashboard"))
 
     allocated = 0
@@ -1618,6 +1731,72 @@ def toggle_user(uid):
     audit(current_user()["id"], "TOGGLE_USER", f"User ID: {uid}")
     flash("User account status updated.", "info")
     return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/user/<int:uid>/toggle-allocation-block", methods=["POST"])
+@login_required
+@admin_required
+def admin_toggle_allocation_block(uid):
+    con = get_db()
+    u = con.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    if not u:
+        abort(404)
+    new_val = 0 if u["allocations_blocked"] else 1
+    con.execute("UPDATE users SET allocations_blocked=? WHERE id=?", (new_val, uid))
+    con.commit()
+    status_label = "Blocked" if new_val else "Allowed"
+    audit(current_user()["id"], "TOGGLE_ALLOCATION_BLOCK", f"User {u['username']} job allocation set to {status_label}")
+    flash(f"Job allocations for user '{u['username']}' are now {status_label}.", "info")
+    return redirect(request.referrer or url_for("admin_users"))
+
+
+@app.route("/admin/user/<int:uid>/set-job-limit", methods=["POST"])
+@login_required
+@admin_required
+def admin_set_user_job_limit(uid):
+    con = get_db()
+    u = con.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    if not u:
+        abort(404)
+    try:
+        limit = int(request.form.get("max_job_limit", "8"))
+        if limit < 1 or limit > 100:
+            raise ValueError("Job limit must be between 1 and 100.")
+        con.execute("UPDATE users SET max_job_limit=? WHERE id=?", (limit, uid))
+        con.commit()
+        audit(current_user()["id"], "SET_USER_JOB_LIMIT", f"User {u['username']} max job limit set to {limit}")
+        flash(f"Max active job limit for user '{u['username']}' set to {limit}.", "success")
+    except Exception as e:
+        flash(f"Error setting job limit: {e}", "danger")
+    return redirect(request.referrer or url_for("admin_users"))
+
+
+@app.route("/admin/allocation/<int:allocation_id>/mark-done", methods=["POST"])
+@login_required
+@admin_required
+def admin_mark_allocation_done(allocation_id):
+    con = get_db()
+    alloc = con.execute("""
+        SELECT a.*, j.id AS job_id, u.username
+        FROM allocations a JOIN jobs j ON j.id = a.job_id JOIN users u ON u.id = a.user_id
+        WHERE a.id=?
+    """, (allocation_id,)).fetchone()
+    if not alloc:
+        abort(404)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        con.execute("""
+            UPDATE allocations SET status='finished', finished_at=?, score=100
+            WHERE id=?
+        """, (now(), allocation_id))
+        con.execute("UPDATE jobs SET status='finished' WHERE id=?", (alloc["job_id"],))
+        con.commit()
+        audit(current_user()["id"], "MARK_JOB_DONE", f"Admin marked allocation #{allocation_id} for user {alloc['username']} as done.")
+        flash(f"Job allocation #{allocation_id} for user '{alloc['username']}' marked as done.", "success")
+    except Exception as e:
+        con.rollback()
+        flash(f"Error marking job as done: {e}", "danger")
+    return redirect(request.referrer or url_for("admin_session_tables"))
 
 
 @app.route("/admin/upload", methods=["GET", "POST"])
