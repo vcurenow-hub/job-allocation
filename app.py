@@ -523,6 +523,7 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
         """, (session_id, mat_no)).fetchone()
 
         if already_allocated_mat:
+            con.execute("UPDATE jobs SET status='assigned' WHERE session_id=? AND mat_no=?", (session_id, mat_no))
             continue
 
         mat_jobs = con.execute("""
@@ -557,6 +558,8 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
 
         if remaining_mats == 0 or total_jobs_allocated >= requested_count:
             break
+
+    return total_jobs_allocated
 
     return total_jobs_allocated
 
@@ -1076,14 +1079,19 @@ def allocate_jobs_mixed_sessions(con, user_id, requested_count, manual=False, ad
     if not open_sessions:
         raise ValueError("There are no open allocation sessions.")
 
+    # If only 1 session is open, allocate directly from that session without mixing overhead
+    if len(open_sessions) == 1:
+        return allocate_jobs_to_user(con, open_sessions[0]["id"], user_id, requested_count, manual=manual, admin_id=admin_id)
+
     total_allocated = 0
-    attempts = 0
-    while total_allocated < requested_count and attempts < (requested_count * 3):
-        attempts += 1
+    remaining_needed = requested_count
+
+    while total_allocated < requested_count:
         available_sessions = []
         for s in open_sessions:
             cnt = con.execute("""
                 SELECT COUNT(*) AS n FROM jobs WHERE session_id=? AND status='available'
+                  AND id NOT IN (SELECT job_id FROM allocations WHERE status != 'reported')
             """, (s["id"],)).fetchone()["n"]
             if cnt > 0:
                 available_sessions.append(s)
@@ -1092,9 +1100,13 @@ def allocate_jobs_mixed_sessions(con, user_id, requested_count, manual=False, ad
             break
 
         target_session = random.choice(available_sessions)
-        allocated_in_session = allocate_jobs_to_user(con, target_session["id"], user_id, 1, manual=manual, admin_id=admin_id)
+        alloc_chunk = min(2, remaining_needed)
+        allocated_in_session = allocate_jobs_to_user(con, target_session["id"], user_id, alloc_chunk, manual=manual, admin_id=admin_id)
         if allocated_in_session > 0:
             total_allocated += allocated_in_session
+            remaining_needed = max(0, requested_count - total_allocated)
+        else:
+            break
 
     return total_allocated
 
