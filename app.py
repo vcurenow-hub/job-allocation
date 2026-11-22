@@ -279,12 +279,19 @@ def init_db():
         details TEXT NOT NULL,
         created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS system_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
     """)
 
     for col, col_def in [
         ("ip_address", "TEXT DEFAULT ''"),
         ("timer_started_at", "TEXT"),
         ("submitted_at", "TEXT"),
+        ("done_btn_unlock_at", "TEXT"),
+        ("done_btn_override", "INTEGER NOT NULL DEFAULT 0"),
     ]:
         try:
             con.execute(f"ALTER TABLE allocations ADD COLUMN {col} {col_def}")
@@ -390,6 +397,25 @@ def protect_post_requests():
             return redirect(request.referrer or url_for("dashboard"))
 
 
+def is_global_allocation_paused(con=None):
+    if con is None:
+        con = get_db()
+    try:
+        row = con.execute("SELECT value FROM system_settings WHERE key='global_allocation_paused'").fetchone()
+        return row is not None and row["value"] == "1"
+    except Exception:
+        return False
+
+
+def set_global_allocation_paused(con, paused=True):
+    val = "1" if paused else "0"
+    con.execute("""
+        INSERT INTO system_settings(key, value) VALUES('global_allocation_paused', ?)
+        ON CONFLICT(key) DO UPDATE SET value=?
+    """, (val, val))
+    con.commit()
+
+
 @app.context_processor
 def inject_globals():
     return {
@@ -397,6 +423,7 @@ def inject_globals():
         "current_user": current_user,
         "current_year": datetime.now().year,
         "get_notification_action": get_notification_action,
+        "is_global_allocation_paused": is_global_allocation_paused,
     }
 
 
@@ -503,12 +530,15 @@ def create_allocation(con, job_id, user_id, manual=False,
         con.execute("UPDATE jobs SET status='assigned' WHERE id=?", (job_id,))
         raise ValueError("This job has already been allocated.")
 
+    default_unlock_dt = datetime.now() + timedelta(minutes=15)
+    done_unlock_str = default_unlock_dt.strftime("%Y-%m-%d %H:%M:%S")
+
     con.execute("""
         INSERT INTO allocations(
-            job_id,user_id,status,created_at,manual,admin_id,replacement_for
-        ) VALUES(?,?,'allocated',?,?,?,?)
+            job_id,user_id,status,created_at,manual,admin_id,replacement_for,done_btn_unlock_at,done_btn_override
+        ) VALUES(?,?,'allocated',?,?,?,?,?,0)
     """, (
-        job_id, user_id, now(), int(manual), admin_id, replacement_for
+        job_id, user_id, now(), int(manual), admin_id, replacement_for, done_unlock_str
     ))
     allocation_id = con.execute(
         "SELECT last_insert_rowid()"
@@ -520,6 +550,9 @@ def create_allocation(con, job_id, user_id, manual=False,
 
 
 def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=False, admin_id=None):
+    if is_global_allocation_paused(con) and not manual:
+        raise ValueError("Job allocations are currently paused globally by the administrator.")
+
     session_row = con.execute("SELECT is_open FROM work_sessions WHERE id=?", (session_id,)).fetchone()
     if not session_row or not session_row["is_open"]:
         raise ValueError("This session table is closed. Allocations have stopped.")
@@ -720,6 +753,8 @@ def user_allocation_rows(con, user_id):
             MAX(a.score) AS score,
             MAX(a.ip_address) AS ip_address,
             MAX(a.timer_started_at) AS timer_started_at,
+            MAX(a.done_btn_unlock_at) AS done_btn_unlock_at,
+            MAX(a.done_btn_override) AS done_btn_override,
             MAX(a.created_at) AS created_at,
             MAX(a.started_at) AS started_at,
             MAX(a.finished_at) AS finished_at
@@ -750,6 +785,7 @@ def user_completed_allocation_rows(con, user_id):
             GROUP_CONCAT(DISTINCT j.course_code) AS all_student_courses,
             MAX(a.score) AS score,
             MAX(a.ip_address) AS ip_address,
+            MAX(a.timer_started_at) AS timer_started_at,
             MAX(a.submitted_at) AS submitted_at,
             MAX(a.finished_at) AS finished_at
         FROM allocations a
@@ -1254,6 +1290,11 @@ def request_jobs():
     if user["role"] != "user":
         abort(403)
 
+    con = get_db()
+    if is_global_allocation_paused(con):
+        flash("Job allocations are currently paused globally by the administrator.", "danger")
+        return redirect(url_for("dashboard"))
+
     user_dict = dict(user) if user else {}
 
     if user_dict.get("allocations_blocked"):
@@ -1371,15 +1412,15 @@ def submit_allocation(allocation_id):
     con = get_db()
     row = get_owned_allocation(con, allocation_id, user["id"])
 
-    if row["status"] != "started":
-        flash("Only an active started job can be submitted.", "warning")
+    if row["status"] not in ("started", "finished"):
+        flash("This job cannot be submitted in its current state.", "warning")
         return redirect(url_for("dashboard"))
 
     if row["timer_started_at"]:
         start_dt = datetime.strptime(row["timer_started_at"], "%Y-%m-%d %H:%M:%S")
         elapsed_secs = (datetime.now() - start_dt).total_seconds()
-        if elapsed_secs < 1800:
-            flash("End Exam / Submit is only available after 30 minutes have elapsed.", "warning")
+        if elapsed_secs < 2700:
+            flash("Submit button is unlocked only when the 45-minute job timer has expired.", "warning")
             return redirect(url_for("dashboard"))
 
     try:
@@ -1392,13 +1433,13 @@ def submit_allocation(allocation_id):
         return redirect(url_for("dashboard"))
 
     con.execute("""
-        UPDATE allocations SET status='finished', finished_at=?, submitted_at=?, score=?
-        WHERE user_id=? AND status='started' AND job_id IN (
+        UPDATE allocations SET status='scored', submitted_at=?, score=?
+        WHERE user_id=? AND job_id IN (
             SELECT id FROM jobs WHERE session_id=? AND mat_no=?
         )
-    """, (now(), now(), score, user["id"], row["session_id"], row["mat_no"]))
+    """, (now(), score, user["id"], row["session_id"], row["mat_no"]))
     con.commit()
-    flash("Job ended and submitted successfully! You may now request new jobs.", "success")
+    flash("Job submitted successfully! Sliding alert stopped.", "success")
     return redirect(url_for("dashboard"))
 
 
@@ -1510,67 +1551,92 @@ def report_allocation(allocation_id):
 
     reason = request.form.get("reason", "").strip()
     explanation = request.form.get("explanation", "").strip()
+    target_course = request.form.get("target_course", "all").strip()
 
     if reason not in REPORT_REASONS or not explanation:
         flash("Please choose a valid report reason and provide an explanation.", "danger")
         return redirect(url_for("dashboard"))
 
+    if target_course != "all":
+        target_allocs = con.execute("""
+            SELECT a.id AS alloc_id, a.job_id, j.course_code, j.mat_no, j.session_id
+            FROM allocations a JOIN jobs j ON j.id = a.job_id
+            WHERE a.user_id = ? AND j.session_id = ? AND j.mat_no = ? AND j.course_code = ? AND a.status IN ('shown', 'started')
+        """, (user["id"], row["session_id"], row["mat_no"], target_course)).fetchall()
+    else:
+        target_allocs = con.execute("""
+            SELECT a.id AS alloc_id, a.job_id, j.course_code, j.mat_no, j.session_id
+            FROM allocations a JOIN jobs j ON j.id = a.job_id
+            WHERE a.user_id = ? AND j.session_id = ? AND j.mat_no = ? AND a.status IN ('shown', 'started')
+        """, (user["id"], row["session_id"], row["mat_no"])).fetchall()
+
+    if not target_allocs:
+        target_allocs = [{"alloc_id": allocation_id, "job_id": row["job_id"], "course_code": row["course_code"], "mat_no": row["mat_no"], "session_id": row["session_id"]}]
+
     try:
         con.execute("BEGIN IMMEDIATE")
+        reported_courses = []
 
-        con.execute("""
-            INSERT INTO reports(
-                allocation_id,job_id,user_id,reason,explanation,created_at
-            ) VALUES(?,?,?,?,?,?)
-        """, (
-            allocation_id, row["job_id"], user["id"],
-            reason, explanation, now()
-        ))
-        report_id = con.execute("SELECT last_insert_rowid()").fetchone()[0]
+        for ta in target_allocs:
+            curr_alloc_id = ta["alloc_id"]
+            curr_job_id = ta["job_id"]
+            curr_course = ta["course_code"]
 
-        if reason == "System malfunctioning":
-            con.execute("UPDATE jobs SET status='available' WHERE id=?", (row["job_id"],))
-            con.execute("UPDATE allocations SET status='paused' WHERE id=?", (allocation_id,))
-            message = (
-                f"SYSTEM MALFUNCTION report #{report_id}: "
-                f"{user['username']} | {row['mat_no']} | "
-                f"{row['course_code']} | {explanation}. "
-                "Affected job released for reassignment."
-            )
-        else:
-            con.execute("UPDATE jobs SET status='review' WHERE id=?", (row["job_id"],))
-            con.execute("UPDATE allocations SET status='reported' WHERE id=?", (allocation_id,))
+            con.execute("""
+                INSERT INTO reports(
+                    allocation_id,job_id,user_id,reason,explanation,created_at
+                ) VALUES(?,?,?,?,?,?)
+            """, (
+                curr_alloc_id, curr_job_id, user["id"],
+                reason, explanation, now()
+            ))
+            report_id = con.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-            replacement = available_job(con, row["session_id"])
-            replacement_id = None
-            if replacement:
-                replacement_id = create_allocation(
-                    con, replacement["id"], user["id"],
-                    replacement_for=allocation_id
-                )
-
-            con.execute("UPDATE reports SET replacement_allocation_id=? WHERE id=?", (replacement_id, report_id))
-
-            if replacement_id:
+            if reason == "System malfunctioning":
+                con.execute("UPDATE jobs SET status='available' WHERE id=?", (curr_job_id,))
+                con.execute("UPDATE allocations SET status='paused', finished_at=? WHERE id=?", (now(), curr_alloc_id))
                 message = (
-                    f"Report #{report_id}: {user['username']} reported "
-                    f"{row['mat_no']} / {row['course_code']} ({reason}). "
-                    f"Replacement allocation #{replacement_id} issued."
+                    f"SYSTEM MALFUNCTION report #{report_id}: "
+                    f"{user['username']} | {ta['mat_no']} | "
+                    f"{curr_course} | {explanation}. "
+                    "Affected job released for reassignment."
                 )
             else:
-                message = (
-                    f"Report #{report_id}: {user['username']} reported "
-                    f"{row['mat_no']} / {row['course_code']} ({reason}). "
-                    "No replacement currently available."
-                )
+                con.execute("UPDATE jobs SET status='review' WHERE id=?", (curr_job_id,))
+                con.execute("UPDATE allocations SET status='reported', finished_at=? WHERE id=?", (now(), curr_alloc_id))
 
-        con.execute("INSERT INTO notifications(message,created_at) VALUES(?,?)", (message, now()))
+                replacement = available_job(con, ta["session_id"], user_id=user["id"])
+                replacement_id = None
+                if replacement:
+                    replacement_id = create_allocation(
+                        con, replacement["id"], user["id"],
+                        replacement_for=curr_alloc_id
+                    )
+
+                con.execute("UPDATE reports SET replacement_allocation_id=? WHERE id=?", (replacement_id, report_id))
+
+                if replacement_id:
+                    message = (
+                        f"Report #{report_id}: {user['username']} reported "
+                        f"{ta['mat_no']} / {curr_course} ({reason}). "
+                        f"Replacement allocation #{replacement_id} issued."
+                    )
+                else:
+                    message = (
+                        f"Report #{report_id}: {user['username']} reported "
+                        f"{ta['mat_no']} / {curr_course} ({reason}). "
+                        "No replacement currently available."
+                    )
+
+            con.execute("INSERT INTO notifications(message,created_at) VALUES(?,?)", (message, now()))
+            reported_courses.append(curr_course)
+
         con.commit()
-    except Exception:
+        flash(f"Report submitted for course(s): {', '.join(reported_courses)}. Sent to administrator.", "success")
+    except Exception as e:
         con.rollback()
-        raise
+        flash(f"Error submitting report: {e}", "danger")
 
-    flash("Your report has been sent to the administrator.", "success")
     return redirect(url_for("dashboard"))
 
 
@@ -1724,6 +1790,180 @@ def admin_user_allocations(uid):
     """, (uid,)).fetchall()
 
     return render_template("admin/user_allocations.html", user=current_user(), user_target=user_target, rows=rows)
+
+
+@app.route("/admin/toggle-global-allocation", methods=["POST"])
+@login_required
+@admin_required
+def admin_toggle_global_allocation():
+    con = get_db()
+    current_paused = is_global_allocation_paused(con)
+    new_paused = not current_paused
+    set_global_allocation_paused(con, new_paused)
+    status_label = "PAUSED globally" if new_paused else "RESUMED globally"
+    audit(current_user()["id"], "TOGGLE_GLOBAL_ALLOCATION", f"Global job allocation set to {status_label}")
+    flash(f"Global job allocations have been {status_label} for all users.", "warning" if new_paused else "success")
+    return redirect(request.referrer or url_for("admin_dashboard"))
+
+
+@app.route("/admin/adjust-global-timer", methods=["POST"])
+@login_required
+@admin_required
+def admin_adjust_global_timer():
+    con = get_db()
+    try:
+        exact_mins_val = request.form.get("exact_minutes")
+        rel_mins_val = request.form.get("minutes")
+
+        con.execute("BEGIN IMMEDIATE")
+
+        active_allocs = con.execute("""
+            SELECT id, done_btn_unlock_at FROM allocations
+            WHERE status IN ('allocated', 'shown', 'started')
+        """).fetchall()
+
+        if exact_mins_val is not None and exact_mins_val.strip() != "":
+            exact_mins = int(exact_mins_val.strip())
+            if exact_mins == 0:
+                con.execute("""
+                    UPDATE allocations SET done_btn_override=1
+                    WHERE status IN ('allocated', 'shown', 'started')
+                """)
+                msg = "Timer hold deactivated totally! 'Already Done' button is now instantly clickable without delay for all users."
+            else:
+                new_dt = datetime.now() + timedelta(minutes=exact_mins)
+                new_str = new_dt.strftime("%Y-%m-%d %H:%M:%S")
+                con.execute("""
+                    UPDATE allocations SET done_btn_unlock_at=?, done_btn_override=0
+                    WHERE status IN ('allocated', 'shown', 'started')
+                """, (new_str,))
+                msg = f"Global 'Done' button timer set to exactly {exact_mins} minutes from now."
+        elif rel_mins_val is not None:
+            rel_mins = int(rel_mins_val)
+            for a in active_allocs:
+                curr_str = a["done_btn_unlock_at"]
+                if curr_str:
+                    try:
+                        curr_dt = datetime.strptime(curr_str, "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        curr_dt = datetime.now()
+                else:
+                    curr_dt = datetime.now()
+
+                new_dt = curr_dt + timedelta(minutes=rel_mins)
+                new_str = new_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+                con.execute("UPDATE allocations SET done_btn_unlock_at=?, done_btn_override=0 WHERE id=?", (new_str, a["id"]))
+            direction = f"increased by {rel_mins} mins" if rel_mins > 0 else f"reduced by {abs(rel_mins)} mins"
+            msg = f"Timers for all active allocations {direction}."
+        else:
+            msg = "No timer change specified."
+
+        con.commit()
+        audit(current_user()["id"], "ADJUST_GLOBAL_TIMER", msg)
+        flash(msg, "success")
+    except Exception as e:
+        con.rollback()
+        flash(f"Error adjusting global timers: {e}", "danger")
+
+    return redirect(request.referrer or url_for("admin_dashboard"))
+
+
+@app.route("/admin/set-global-done-override", methods=["POST"])
+@login_required
+@admin_required
+def admin_set_global_done_override():
+    con = get_db()
+    try:
+        state = int(request.form.get("override_state", "0"))
+        con.execute("BEGIN IMMEDIATE")
+        con.execute("""
+            UPDATE allocations SET done_btn_override=?
+            WHERE status IN ('allocated', 'shown', 'started')
+        """, (state,))
+        con.commit()
+        state_label = "Force Unlocked (Instant Clickable)" if state == 1 else ("Force Locked (Deactivated)" if state == -1 else "Timer Controlled")
+        audit(current_user()["id"], "SET_GLOBAL_DONE_OVERRIDE", f"Global 'Done' button set to {state_label}")
+        flash(f"Job 'Done' buttons for all active allocations set to: {state_label}.", "success")
+    except Exception as e:
+        con.rollback()
+        flash(f"Error setting global button override: {e}", "danger")
+
+    return redirect(request.referrer or url_for("admin_dashboard"))
+
+
+@app.route("/admin/allocation/<int:allocation_id>/adjust-timer", methods=["POST"])
+@login_required
+@admin_required
+def admin_adjust_allocation_timer(allocation_id):
+    con = get_db()
+    alloc = con.execute("SELECT * FROM allocations WHERE id=?", (allocation_id,)).fetchone()
+    if not alloc:
+        abort(404)
+
+    try:
+        exact_mins_val = request.form.get("exact_minutes")
+        rel_mins_val = request.form.get("minutes")
+
+        if exact_mins_val is not None and exact_mins_val.strip() != "":
+            exact_mins = int(exact_mins_val.strip())
+            if exact_mins == 0:
+                con.execute("UPDATE allocations SET done_btn_override=1 WHERE id=?", (allocation_id,))
+                msg = f"Timer hold deactivated for allocation #{allocation_id}! Button is now instantly clickable."
+            else:
+                new_dt = datetime.now() + timedelta(minutes=exact_mins)
+                new_str = new_dt.strftime("%Y-%m-%d %H:%M:%S")
+                con.execute("UPDATE allocations SET done_btn_unlock_at=?, done_btn_override=0 WHERE id=?", (new_str, allocation_id))
+                msg = f"Timer for allocation #{allocation_id} set to exactly {exact_mins} minutes."
+        elif rel_mins_val is not None:
+            rel_mins = int(rel_mins_val)
+            curr_str = alloc["done_btn_unlock_at"]
+            if curr_str:
+                try:
+                    curr_dt = datetime.strptime(curr_str, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    curr_dt = datetime.now()
+            else:
+                curr_dt = datetime.now()
+
+            new_dt = curr_dt + timedelta(minutes=rel_mins)
+            new_str = new_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+            con.execute("UPDATE allocations SET done_btn_unlock_at=?, done_btn_override=0 WHERE id=?", (new_str, allocation_id))
+            direction = f"increased by {rel_mins} mins" if rel_mins > 0 else f"reduced by {abs(rel_mins)} mins"
+            msg = f"Timer for allocation #{allocation_id} {direction}."
+        else:
+            msg = "No timer change specified."
+
+        con.commit()
+        audit(current_user()["id"], "ADJUST_ALLOCATION_TIMER", msg)
+        flash(msg, "success")
+    except Exception as e:
+        flash(f"Error adjusting timer: {e}", "danger")
+
+    return redirect(request.referrer or url_for("admin_session_tables"))
+
+
+@app.route("/admin/allocation/<int:allocation_id>/set-done-override", methods=["POST"])
+@login_required
+@admin_required
+def admin_set_allocation_done_override(allocation_id):
+    con = get_db()
+    alloc = con.execute("SELECT * FROM allocations WHERE id=?", (allocation_id,)).fetchone()
+    if not alloc:
+        abort(404)
+
+    try:
+        state = int(request.form.get("override_state", "0"))
+        con.execute("UPDATE allocations SET done_btn_override=? WHERE id=?", (state, allocation_id))
+        con.commit()
+        state_label = "Force Unlocked (Active)" if state == 1 else ("Force Locked (Disabled)" if state == -1 else "Timer Controlled")
+        audit(current_user()["id"], "SET_ALLOCATION_DONE_OVERRIDE", f"Allocation #{allocation_id} 'Done' button set to {state_label}")
+        flash(f"'Done' button for allocation #{allocation_id} set to: {state_label}.", "success")
+    except Exception as e:
+        flash(f"Error setting button override: {e}", "danger")
+
+    return redirect(request.referrer or url_for("admin_session_tables"))
 
 
 @app.route("/admin/user/<int:uid>/approve", methods=["POST"])
@@ -1980,7 +2220,7 @@ def upload_records():
                       AND a2.user_id = a.user_id AND a2.status != 'reported') AS multi_count
             FROM jobs j
             LEFT JOIN allocations a ON a.id = (
-                SELECT MAX(id) FROM allocations WHERE job_id = j.id
+                SELECT MAX(id) FROM allocations WHERE job_id = j.id AND status != 'reported'
             )
             LEFT JOIN users u ON u.id = a.user_id
             WHERE j.session_id = ?
@@ -2009,7 +2249,7 @@ def admin_jobs():
         FROM jobs j
         JOIN work_sessions s ON s.id = j.session_id
         LEFT JOIN allocations a ON a.id = (
-            SELECT MAX(id) FROM allocations WHERE job_id = j.id
+            SELECT MAX(id) FROM allocations WHERE job_id = j.id AND status != 'reported'
         )
         LEFT JOIN users u ON u.id = a.user_id
         ORDER BY j.id DESC
@@ -2036,7 +2276,7 @@ def admin_session_tables():
                    u.username AS assigned_user
             FROM jobs j
             LEFT JOIN allocations a ON a.id = (
-                SELECT MAX(id) FROM allocations WHERE job_id = j.id
+                SELECT MAX(id) FROM allocations WHERE job_id = j.id AND status != 'reported'
             )
             LEFT JOIN users u ON u.id = a.user_id
             WHERE j.session_id = ?

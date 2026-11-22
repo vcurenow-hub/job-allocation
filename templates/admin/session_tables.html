@@ -286,6 +286,11 @@
                                                                         </button>
                                                                     </form>
                                                                 </li>
+                                                                <li>
+                                                                    <button type="button" class="dropdown-item text-info fw-bold" data-bs-toggle="modal" data-bs-target="#timerModal{{ r.id }}">
+                                                                        <i class="bi bi-clock-history me-2"></i> Adjust "Done" Button Timer
+                                                                    </button>
+                                                                </li>
                                                             {% endif %}
                                                             <li>
                                                                 <form method="post" action="{{ url_for('admin_release_allocation', allocation_id=r.allocation_id) }}" onsubmit="return confirm('Release job back to unallocated pool awaiting allocation?');">
@@ -381,6 +386,53 @@
                                                                 <button type="submit" class="btn btn-primary fw-bold">Reallocate Now</button>
                                                             </div>
                                                         </form>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- Timer & Done Button Modal for Row {{ r.id }} -->
+                                            <div class="modal fade" id="timerModal{{ r.id }}" tabindex="-1" aria-hidden="true">
+                                                <div class="modal-dialog">
+                                                    <div class="modal-content">
+                                                        <div class="modal-header bg-dark text-white">
+                                                            <h5 class="modal-title fw-bold">Adjust "Done" Button & Timer: Allocation #{{ r.allocation_id }}</h5>
+                                                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                                                        </div>
+                                                        <div class="modal-body text-start">
+                                                            <div class="mb-4 border-bottom pb-3">
+                                                                <label class="form-label font-semibold">1. Set Exact Timer Duration (Mins from Now)</label>
+                                                                <form method="post" action="{{ url_for('admin_adjust_allocation_timer', allocation_id=r.allocation_id) }}" class="d-flex gap-2 mb-3">
+                                                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                                    <input type="number" name="exact_minutes" min="0" max="180" class="form-control form-control-sm font-monospace fw-bold" placeholder="e.g. 10" required>
+                                                                    <button type="submit" class="btn btn-sm btn-primary fw-bold">Set Timer</button>
+                                                                </form>
+                                                                <label class="form-label font-semibold">Quick Adjustment (+/- Mins)</label>
+                                                                <div class="d-flex gap-2">
+                                                                    <form method="post" action="{{ url_for('admin_adjust_allocation_timer', allocation_id=r.allocation_id) }}" class="d-inline">
+                                                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                                        <input type="hidden" name="minutes" value="-5">
+                                                                        <button type="submit" class="btn btn-sm btn-outline-danger fw-bold">-5 Mins</button>
+                                                                    </form>
+                                                                    <form method="post" action="{{ url_for('admin_adjust_allocation_timer', allocation_id=r.allocation_id) }}" class="d-inline">
+                                                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                                        <input type="hidden" name="minutes" value="5">
+                                                                        <button type="submit" class="btn btn-sm btn-outline-success fw-bold">+5 Mins</button>
+                                                                    </form>
+                                                                </div>
+                                                            </div>
+                                                            <div>
+                                                                <label class="form-label font-semibold">2. Deactivate Timer / Force Unlock</label>
+                                                                <form method="post" action="{{ url_for('admin_set_allocation_done_override', allocation_id=r.allocation_id) }}" class="d-flex gap-2 flex-wrap">
+                                                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                                    <button type="submit" name="override_state" value="1" class="btn btn-sm btn-success fw-bold">⚡ Deactivate Timer (Instant Clickable)</button>
+                                                                    <button type="submit" name="override_state" value="-1" class="btn btn-sm btn-danger fw-bold">Force Lock</button>
+                                                                    <button type="submit" name="override_state" value="0" class="btn btn-sm btn-secondary fw-bold">Timer Mode</button>
+                                                                </form>
+                                                            </div>
+                                                        </div>
+                                                        <div class="modal-footer">
+                                                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </div>
