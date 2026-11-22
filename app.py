@@ -1227,11 +1227,13 @@ def request_jobs():
     if user["role"] != "user":
         abort(403)
 
-    if user.get("allocations_blocked"):
+    user_dict = dict(user) if user else {}
+
+    if user_dict.get("allocations_blocked"):
         flash("Your account has been temporarily blocked from receiving new job allocations by the administrator.", "danger")
         return redirect(url_for("dashboard"))
 
-    user_max_limit = user.get("max_job_limit") or 8
+    user_max_limit = user_dict.get("max_job_limit") or 8
 
     con = get_db()
     open_sessions = con.execute("SELECT * FROM work_sessions WHERE is_open=1").fetchall()
