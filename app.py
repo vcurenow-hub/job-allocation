@@ -524,12 +524,12 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
     if not session_row or not session_row["is_open"]:
         raise ValueError("This session table is closed. Allocations have stopped.")
 
+    total_units_allocated = 0
     total_jobs_allocated = 0
     multi_course_mats_allocated = 0
     MAX_MULTI_COURSE_MATS = 2
 
-    while total_jobs_allocated < requested_count:
-        remaining_needed = requested_count - total_jobs_allocated
+    while total_units_allocated < requested_count:
         mat_no = None
 
         # 1. First Priority: Check if user already owns any students with remaining unallocated courses in this session
@@ -553,8 +553,8 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
         if own_mat_job:
             mat_no = own_mat_job["mat_no"]
         else:
-            # 2. Second Priority (Multi-Course Scan): Scan for students with 2+ courses fitting within remaining_needed
-            if multi_course_mats_allocated < MAX_MULTI_COURSE_MATS and remaining_needed >= 2:
+            # 2. Second Priority (Multi-Course Scan): Scan for students with 2+ courses in this session
+            if multi_course_mats_allocated < MAX_MULTI_COURSE_MATS:
                 multi_mat_row = con.execute("""
                     SELECT j.mat_no FROM jobs j
                     JOIN work_sessions s ON s.id = j.session_id
@@ -568,10 +568,10 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
                           WHERE j2.session_id = ? AND a2.user_id != ? AND a2.status != 'reported'
                       )
                     GROUP BY j.mat_no
-                    HAVING COUNT(*) > 1 AND COUNT(*) <= ?
+                    HAVING COUNT(*) > 1
                     ORDER BY MAX(j.is_priority) DESC, RANDOM()
                     LIMIT 1
-                """, (session_id, session_id, user_id, remaining_needed)).fetchone()
+                """, (session_id, session_id, user_id)).fetchone()
 
                 if multi_mat_row:
                     mat_no = multi_mat_row["mat_no"]
@@ -599,7 +599,7 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
                 if single_mat_row:
                     mat_no = single_mat_row["mat_no"]
 
-            # 4. Fallback: Pick any available student fitting within remaining_needed
+            # 4. Fallback: Pick any available student not owned by another user
             if not mat_no:
                 mat_row = con.execute("""
                     SELECT j.mat_no FROM jobs j
@@ -614,10 +614,9 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
                           WHERE j2.session_id = ? AND a2.user_id != ? AND a2.status != 'reported'
                       )
                     GROUP BY j.mat_no
-                    HAVING COUNT(*) <= ?
                     ORDER BY MAX(j.is_priority) DESC, RANDOM()
                     LIMIT 1
-                """, (session_id, session_id, user_id, remaining_needed)).fetchone()
+                """, (session_id, session_id, user_id)).fetchone()
 
                 if not mat_row:
                     break
@@ -634,8 +633,8 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
             ORDER BY j.id
         """, (session_id, mat_no)).fetchall()
 
-        if not mat_jobs or (total_jobs_allocated + len(mat_jobs) > requested_count):
-            break
+        if not mat_jobs:
+            continue
 
         is_multi_course = len(mat_jobs) > 1
 
@@ -651,8 +650,10 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
             total_jobs_allocated += 1
             allocated_in_round += 1
 
-        if allocated_in_round > 0 and is_multi_course:
-            multi_course_mats_allocated += 1
+        if allocated_in_round > 0:
+            total_units_allocated += 1
+            if is_multi_course:
+                multi_course_mats_allocated += 1
 
         remaining_mats = con.execute("""
             SELECT COUNT(DISTINCT j.mat_no) AS n FROM jobs j
@@ -661,7 +662,7 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
               AND j.id NOT IN (SELECT job_id FROM allocations WHERE status != 'reported')
         """, (session_id,)).fetchone()["n"]
 
-        if remaining_mats == 0 or total_jobs_allocated >= requested_count:
+        if remaining_mats == 0 or total_units_allocated >= requested_count:
             break
 
     return total_jobs_allocated
@@ -702,35 +703,61 @@ def scored_job_count(con, user_id):
 
 def user_allocation_rows(con, user_id):
     return con.execute("""
-        SELECT a.*, j.mat_no, j.course_code, j.student_name,
-               j.signature_id, j.department, j.source,
-               s.name AS session_name,
-               (SELECT COUNT(DISTINCT j2.course_code)
-                FROM allocations a2 JOIN jobs j2 ON j2.id = a2.job_id
-                WHERE j2.session_id = j.session_id AND j2.mat_no = j.mat_no
-                  AND a2.user_id = a.user_id AND a2.status != 'reported') AS multi_count,
-               (SELECT GROUP_CONCAT(DISTINCT j3.course_code)
-                FROM allocations a3 JOIN jobs j3 ON j3.id = a3.job_id
-                WHERE j3.session_id = j.session_id AND j3.mat_no = j.mat_no
-                  AND a3.user_id = a.user_id AND a3.status != 'reported') AS all_student_courses
+        SELECT
+            MIN(a.id) AS id,
+            a.user_id,
+            j.session_id,
+            s.name AS session_name,
+            j.mat_no,
+            GROUP_CONCAT(DISTINCT j.course_code) AS course_code,
+            j.student_name,
+            j.signature_id,
+            j.department,
+            j.source,
+            MIN(a.status) AS status,
+            COUNT(DISTINCT j.course_code) AS multi_count,
+            GROUP_CONCAT(DISTINCT j.course_code) AS all_student_courses,
+            MAX(a.score) AS score,
+            MAX(a.ip_address) AS ip_address,
+            MAX(a.timer_started_at) AS timer_started_at,
+            MAX(a.created_at) AS created_at,
+            MAX(a.started_at) AS started_at,
+            MAX(a.finished_at) AS finished_at
         FROM allocations a
-        JOIN jobs j ON j.id=a.job_id
-        JOIN work_sessions s ON s.id=j.session_id
-        WHERE a.user_id=? AND a.status IN ('allocated', 'shown', 'started')
-        ORDER BY a.id DESC
+        JOIN jobs j ON j.id = a.job_id
+        JOIN work_sessions s ON s.id = j.session_id
+        WHERE a.user_id = ? AND a.status IN ('allocated', 'shown', 'started')
+        GROUP BY j.session_id, j.mat_no
+        ORDER BY MIN(a.id) DESC
     """, (user_id,)).fetchall()
 
 
 def user_completed_allocation_rows(con, user_id):
     return con.execute("""
-        SELECT a.*, j.mat_no, j.course_code, j.student_name,
-               j.signature_id, j.department, j.source,
-               s.name AS session_name
+        SELECT
+            MIN(a.id) AS id,
+            a.user_id,
+            j.session_id,
+            s.name AS session_name,
+            j.mat_no,
+            GROUP_CONCAT(DISTINCT j.course_code) AS course_code,
+            j.student_name,
+            j.signature_id,
+            j.department,
+            j.source,
+            MIN(a.status) AS status,
+            COUNT(DISTINCT j.course_code) AS multi_count,
+            GROUP_CONCAT(DISTINCT j.course_code) AS all_student_courses,
+            MAX(a.score) AS score,
+            MAX(a.ip_address) AS ip_address,
+            MAX(a.submitted_at) AS submitted_at,
+            MAX(a.finished_at) AS finished_at
         FROM allocations a
-        JOIN jobs j ON j.id=a.job_id
-        JOIN work_sessions s ON s.id=j.session_id
-        WHERE a.user_id=? AND a.status IN ('finished', 'scored')
-        ORDER BY a.id DESC
+        JOIN jobs j ON j.id = a.job_id
+        JOIN work_sessions s ON s.id = j.session_id
+        WHERE a.user_id = ? AND a.status IN ('finished', 'scored')
+        GROUP BY j.session_id, j.mat_no
+        ORDER BY MIN(a.id) DESC
     """, (user_id,)).fetchall()
 
 
@@ -1192,15 +1219,18 @@ def allocate_jobs_mixed_sessions(con, user_id, requested_count, manual=False, ad
     if len(open_sessions) == 1:
         return allocate_jobs_to_user(con, open_sessions[0]["id"], user_id, requested_count, manual=manual, admin_id=admin_id)
 
-    total_allocated = 0
-    remaining_needed = requested_count
+    total_units_allocated = 0
+    total_jobs_allocated = 0
+    attempts = 0
 
-    while total_allocated < requested_count:
+    while total_units_allocated < requested_count and attempts < (requested_count * 5):
+        attempts += 1
         available_sessions = []
         for s in open_sessions:
             cnt = con.execute("""
-                SELECT COUNT(*) AS n FROM jobs WHERE session_id=? AND status='available'
-                  AND id NOT IN (SELECT job_id FROM allocations WHERE status != 'reported')
+                SELECT COUNT(DISTINCT j.mat_no) AS n FROM jobs j
+                WHERE j.session_id=? AND j.status='available'
+                  AND j.id NOT IN (SELECT job_id FROM allocations WHERE status != 'reported')
             """, (s["id"],)).fetchone()["n"]
             if cnt > 0:
                 available_sessions.append(s)
@@ -1209,15 +1239,12 @@ def allocate_jobs_mixed_sessions(con, user_id, requested_count, manual=False, ad
             break
 
         target_session = random.choice(available_sessions)
-        alloc_chunk = min(2, remaining_needed)
-        allocated_in_session = allocate_jobs_to_user(con, target_session["id"], user_id, alloc_chunk, manual=manual, admin_id=admin_id)
+        allocated_in_session = allocate_jobs_to_user(con, target_session["id"], user_id, 1, manual=manual, admin_id=admin_id)
         if allocated_in_session > 0:
-            total_allocated += allocated_in_session
-            remaining_needed = max(0, requested_count - total_allocated)
-        else:
-            break
+            total_units_allocated += 1
+            total_jobs_allocated += allocated_in_session
 
-    return total_allocated
+    return total_jobs_allocated
 
 
 @app.route("/request-jobs", methods=["POST"])
@@ -1326,11 +1353,12 @@ def show_allocation(allocation_id):
         flash("Please enter an IP number or station identifier to open this job.", "danger")
         return redirect(url_for("dashboard"))
 
-    # Once IP/number is put, start the timer immediately (status='started')
     con.execute("""
         UPDATE allocations SET status='started', shown_at=?, started_at=?, timer_started_at=?, ip_address=?
-        WHERE id=? AND user_id=? AND status='allocated'
-    """, (now(), now(), now(), ip_address, allocation_id, user["id"]))
+        WHERE user_id=? AND status='allocated' AND job_id IN (
+            SELECT id FROM jobs WHERE session_id=? AND mat_no=?
+        )
+    """, (now(), now(), now(), ip_address, user["id"], row["session_id"], row["mat_no"]))
     con.commit()
     flash(f"Job opened with IP/Station '{ip_address}' and timer started!", "success")
     return redirect(url_for("dashboard"))
@@ -1347,11 +1375,10 @@ def submit_allocation(allocation_id):
         flash("Only an active started job can be submitted.", "warning")
         return redirect(url_for("dashboard"))
 
-    # 30 minute threshold check (elapsed >= 30 minutes / 1800 seconds)
     if row["timer_started_at"]:
         start_dt = datetime.strptime(row["timer_started_at"], "%Y-%m-%d %H:%M:%S")
         elapsed_secs = (datetime.now() - start_dt).total_seconds()
-        if elapsed_secs < 1800: # 30 mins = 1800 seconds
+        if elapsed_secs < 1800:
             flash("End Exam / Submit is only available after 30 minutes have elapsed.", "warning")
             return redirect(url_for("dashboard"))
 
@@ -1366,8 +1393,10 @@ def submit_allocation(allocation_id):
 
     con.execute("""
         UPDATE allocations SET status='finished', finished_at=?, submitted_at=?, score=?
-        WHERE id=? AND user_id=? AND status='started'
-    """, (now(), now(), score, allocation_id, user["id"]))
+        WHERE user_id=? AND status='started' AND job_id IN (
+            SELECT id FROM jobs WHERE session_id=? AND mat_no=?
+        )
+    """, (now(), now(), score, user["id"], row["session_id"], row["mat_no"]))
     con.commit()
     flash("Job ended and submitted successfully! You may now request new jobs.", "success")
     return redirect(url_for("dashboard"))
@@ -1389,12 +1418,16 @@ def replace_done_allocation(allocation_id):
 
         con.execute("""
             UPDATE allocations SET status='finished', finished_at=?, score=100
-            WHERE id=? AND user_id=?
-        """, (now(), allocation_id, user["id"]))
+            WHERE user_id=? AND job_id IN (
+                SELECT id FROM jobs WHERE session_id=? AND mat_no=?
+            )
+        """, (now(), user["id"], row["session_id"], row["mat_no"]))
 
-        con.execute("UPDATE jobs SET status='finished' WHERE id=?", (row["job_id"],))
+        con.execute("""
+            UPDATE jobs SET status='finished' WHERE session_id=? AND mat_no=?
+        """, (row["session_id"], row["mat_no"]))
 
-        replacement = available_job(con, row["session_id"])
+        replacement = available_job(con, row["session_id"], user_id=user["id"])
         replacement_id = None
         if replacement:
             replacement_id = create_allocation(
@@ -1409,6 +1442,8 @@ def replace_done_allocation(allocation_id):
     except Exception as e:
         con.rollback()
         flash(f"Error processing replacement: {e}", "danger")
+
+    return redirect(url_for("dashboard"))
 
     return redirect(url_for("dashboard"))
 
