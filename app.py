@@ -3,6 +3,7 @@ import re
 import io
 import csv
 import json
+import time
 import sqlite3
 import secrets
 import random
@@ -3094,10 +3095,13 @@ def file_too_large(error):
     return redirect(url_for("upload_records"))
 
 
-# @app.errorhandler(500)
-# def internal_error(error):
-#     flash("An internal server error occurred. Please try again.", "danger")
-#     return redirect(url_for("dashboard"))
+@app.errorhandler(500)
+@app.errorhandler(Exception)
+def handle_500_error(error):
+    app.logger.error(f"Unhandled Exception: {error}", exc_info=True)
+    msg = str(getattr(error, 'description', error))
+    flash(f"An unexpected error occurred: {msg}. Please try again.", "danger")
+    return redirect(request.referrer or url_for("dashboard"))
 
 
 init_db()
