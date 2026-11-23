@@ -155,9 +155,11 @@ def normalize_time_key(time_str):
 
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DATABASE, check_same_thread=False)
+        g.db = sqlite3.connect(DATABASE, check_same_thread=False, timeout=30.0)
         g.db.row_factory = sqlite3.Row
         g.db.execute("PRAGMA foreign_keys = ON")
+        g.db.execute("PRAGMA journal_mode = WAL")
+        g.db.execute("PRAGMA busy_timeout = 30000")
     return g.db
 
 
@@ -169,9 +171,11 @@ def close_db(exception=None):
 
 
 def standalone_db():
-    connection = sqlite3.connect(DATABASE, check_same_thread=False)
+    connection = sqlite3.connect(DATABASE, check_same_thread=False, timeout=30.0)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA busy_timeout = 30000")
     return connection
 
 
@@ -550,7 +554,7 @@ def create_allocation(con, job_id, user_id, manual=False,
     return allocation_id
 
 
-def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=False, admin_id=None):
+def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=False, admin_id=None, max_multi_mats_allowed=2):
     if is_global_allocation_paused(con) and not manual:
         raise ValueError("Job allocations are currently paused globally by the administrator.")
 
@@ -561,7 +565,6 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
     total_units_allocated = 0
     total_jobs_allocated = 0
     multi_course_mats_allocated = 0
-    MAX_MULTI_COURSE_MATS = 2
 
     while total_units_allocated < requested_count:
         mat_no = None
@@ -587,8 +590,8 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
         if own_mat_job:
             mat_no = own_mat_job["mat_no"]
         else:
-            # 2. Second Priority (Multi-Course Scan): Scan for students with 2+ courses in this session
-            if multi_course_mats_allocated < MAX_MULTI_COURSE_MATS:
+            # 2. Second Priority (Multi-Course Scan): Scan for students with 2+ courses ONLY IF max_multi_mats_allowed > 0
+            if multi_course_mats_allocated < max_multi_mats_allowed:
                 multi_mat_row = con.execute("""
                     SELECT j.mat_no FROM jobs j
                     JOIN work_sessions s ON s.id = j.session_id
@@ -610,7 +613,7 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
                 if multi_mat_row:
                     mat_no = multi_mat_row["mat_no"]
 
-            # 3. Third Priority (or if MAX_MULTI_COURSE_MATS reached): Strictly scan for single-course students (COUNT(*) == 1)
+            # 3. Third Priority (or if max_multi_mats_allowed limit reached): Strictly scan for single-course students (COUNT(*) == 1)
             if not mat_no:
                 single_mat_row = con.execute("""
                     SELECT j.mat_no FROM jobs j
@@ -699,7 +702,7 @@ def allocate_jobs_to_user(con, session_id, user_id, requested_count, manual=Fals
         if remaining_mats == 0 or total_units_allocated >= requested_count:
             break
 
-    return total_jobs_allocated
+    return total_units_allocated, multi_course_mats_allocated
 
     return total_jobs_allocated
 
@@ -1252,23 +1255,43 @@ def allocate_jobs_mixed_sessions(con, user_id, requested_count, manual=False, ad
     if not open_sessions:
         raise ValueError("There are no open allocation sessions.")
 
-    # If only 1 session is open, allocate directly from that session without mixing overhead
+    # Single session direct allocation
     if len(open_sessions) == 1:
-        return allocate_jobs_to_user(con, open_sessions[0]["id"], user_id, requested_count, manual=manual, admin_id=admin_id)
+        u_alloc, _ = allocate_jobs_to_user(con, open_sessions[0]["id"], user_id, requested_count, manual=manual, admin_id=admin_id, max_multi_mats_allowed=2)
+        return u_alloc
 
     total_units_allocated = 0
-    total_jobs_allocated = 0
+    multi_mats_total = 0
     attempts = 0
 
     while total_units_allocated < requested_count and attempts < (requested_count * 5):
         attempts += 1
+        rem_multi = max(0, 2 - multi_mats_total)
+
         available_sessions = []
         for s in open_sessions:
-            cnt = con.execute("""
-                SELECT COUNT(DISTINCT j.mat_no) AS n FROM jobs j
-                WHERE j.session_id=? AND j.status='available'
-                  AND j.id NOT IN (SELECT job_id FROM allocations WHERE status != 'reported')
-            """, (s["id"],)).fetchone()["n"]
+            if rem_multi == 0:
+                cnt = len(con.execute("""
+                    SELECT DISTINCT j.mat_no FROM jobs j
+                    WHERE j.session_id=? AND j.status='available'
+                      AND j.id NOT IN (SELECT job_id FROM allocations WHERE status != 'reported')
+                      AND j.mat_no NOT IN (
+                          SELECT j2.mat_no FROM allocations a2 JOIN jobs j2 ON j2.id = a2.job_id
+                          WHERE j2.session_id = ? AND a2.user_id != ? AND a2.status != 'reported'
+                      )
+                    GROUP BY j.mat_no HAVING COUNT(*) = 1
+                """, (s["id"], s["id"], user_id)).fetchall())
+            else:
+                cnt = con.execute("""
+                    SELECT COUNT(DISTINCT j.mat_no) AS n FROM jobs j
+                    WHERE j.session_id=? AND j.status='available'
+                      AND j.id NOT IN (SELECT job_id FROM allocations WHERE status != 'reported')
+                      AND j.mat_no NOT IN (
+                          SELECT j2.mat_no FROM allocations a2 JOIN jobs j2 ON j2.id = a2.job_id
+                          WHERE j2.session_id = ? AND a2.user_id != ? AND a2.status != 'reported'
+                      )
+                """, (s["id"], s["id"], user_id)).fetchone()["n"]
+
             if cnt > 0:
                 available_sessions.append(s)
 
@@ -1276,12 +1299,16 @@ def allocate_jobs_mixed_sessions(con, user_id, requested_count, manual=False, ad
             break
 
         target_session = random.choice(available_sessions)
-        allocated_in_session = allocate_jobs_to_user(con, target_session["id"], user_id, 1, manual=manual, admin_id=admin_id)
-        if allocated_in_session > 0:
-            total_units_allocated += 1
-            total_jobs_allocated += allocated_in_session
+        u_alloc, m_alloc = allocate_jobs_to_user(
+            con, target_session["id"], user_id, 1,
+            manual=manual, admin_id=admin_id,
+            max_multi_mats_allowed=rem_multi
+        )
+        if u_alloc > 0:
+            total_units_allocated += u_alloc
+            multi_mats_total += m_alloc
 
-    return total_jobs_allocated
+    return total_units_allocated
 
 
 @app.route("/request-jobs", methods=["POST"])
@@ -1470,7 +1497,7 @@ def replace_done_allocation(allocation_id):
         con.execute("BEGIN IMMEDIATE")
 
         con.execute("""
-            UPDATE allocations SET status='finished', finished_at=?, score=100
+            UPDATE allocations SET status='finished', finished_at=?
             WHERE user_id=? AND job_id IN (
                 SELECT id FROM jobs WHERE session_id=? AND mat_no=?
             )
@@ -1480,23 +1507,21 @@ def replace_done_allocation(allocation_id):
             UPDATE jobs SET status='finished' WHERE session_id=? AND mat_no=?
         """, (row["session_id"], row["mat_no"]))
 
-        replacement = available_job(con, row["session_id"], user_id=user["id"])
-        replacement_id = None
-        if replacement:
-            replacement_id = create_allocation(
-                con, replacement["id"], user["id"], manual=False,
-                replacement_for=allocation_id
-            )
-            flash(f"Job marked as already done. Replacement job #{replacement_id} automatically assigned to you!", "success")
+        replacement_units = 0
+        try:
+            replacement_units = allocate_jobs_mixed_sessions(con, user["id"], 1, manual=False)
+        except ValueError:
+            pass
+
+        if replacement_units > 0:
+            flash("Job moved to Completed Folder. Replacement student unit assigned from an open session!", "success")
         else:
-            flash("Job marked as done, but no other available jobs remain in this session.", "info")
+            flash("Job moved to Completed Folder. Session tables are currently closed or empty, so no replacement was allocated.", "warning")
 
         con.commit()
     except Exception as e:
         con.rollback()
         flash(f"Error processing replacement: {e}", "danger")
-
-    return redirect(url_for("dashboard"))
 
     return redirect(url_for("dashboard"))
 
@@ -2146,6 +2171,7 @@ def upload_records():
             if selected_session_val != "auto" and str(selected_session_val).isdigit():
                 forced_sid = int(selected_session_val)
 
+            con.execute("BEGIN IMMEDIATE")
             for r in records:
                 bucket = r["session_bucket"]
                 bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
@@ -2170,12 +2196,28 @@ def upload_records():
                         r["department"], r["source"], job_status, now()
                     ))
                     added += 1
+                    job_id = con.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+                    if is_done:
+                        admin_uid = current_user()["id"]
+                        con.execute("""
+                            INSERT INTO allocations(job_id, user_id, status, created_at, finished_at, score, manual, admin_id)
+                            VALUES(?, ?, 'finished', ?, ?, 100, 1, ?)
+                        """, (job_id, admin_uid, now(), now(), admin_uid))
                 except sqlite3.IntegrityError:
                     if is_done:
-                        con.execute("""
-                            UPDATE jobs SET status='finished'
-                            WHERE session_id=? AND mat_no=? AND course_code=?
-                        """, (target_sid, r["mat_no"], r["course_code"]))
+                        job_row = con.execute("""
+                            SELECT id FROM jobs WHERE session_id=? AND mat_no=? AND course_code=?
+                        """, (target_sid, r["mat_no"], r["course_code"])).fetchone()
+                        if job_row:
+                            con.execute("UPDATE jobs SET status='finished' WHERE id=?", (job_row["id"],))
+                            existing_alloc = con.execute("SELECT 1 FROM allocations WHERE job_id=?", (job_row["id"],)).fetchone()
+                            if not existing_alloc:
+                                admin_uid = current_user()["id"]
+                                con.execute("""
+                                    INSERT INTO allocations(job_id, user_id, status, created_at, finished_at, score, manual, admin_id)
+                                    VALUES(?, ?, 'finished', ?, ?, 100, 1, ?)
+                                """, (job_row["id"], admin_uid, now(), now(), admin_uid))
                     duplicates += 1
 
             con.commit()
@@ -2296,9 +2338,9 @@ def admin_session_tables():
         """, (s["id"],)).fetchall()
 
         total_jobs = len(rows)
-        finished_jobs = sum(1 for r in rows if r["allocation_status"] in ['finished', 'scored'] or r["score"] is not None)
+        finished_jobs = sum(1 for r in rows if r["status"] == 'finished' or r["allocation_status"] in ['finished', 'scored'] or r["score"] is not None)
         assigned_jobs = sum(1 for r in rows if r["allocation_status"] in ['allocated', 'shown', 'started'])
-        available_jobs = sum(1 for r in rows if r["status"] == 'available')
+        available_jobs = sum(1 for r in rows if r["status"] == 'available' and r["allocation_status"] not in ['finished', 'scored', 'allocated', 'shown', 'started'])
 
         session_data.append({
             "session": s,
@@ -2647,7 +2689,7 @@ def admin_bulk_allocate():
 
         allocated = 0
         con.execute("BEGIN IMMEDIATE")
-        allocated = allocate_jobs_to_user(con, session_id, user_id, quantity, manual=True, admin_id=current_user()["id"])
+        allocated, _ = allocate_jobs_to_user(con, session_id, user_id, quantity, manual=True, admin_id=current_user()["id"])
         con.commit()
 
         audit(current_user()["id"], "BULK_ALLOCATION",
