@@ -3,19 +3,16 @@
 {% block title %}My Dashboard{% endblock %}
 
 {% block content %}
-<!-- Top Sliding Banner for Expired Job Submissions (Bold Red Alert) -->
-<div id="slidingTimeExpiredBanner" class="sliding-top-banner bg-danger text-white p-3 shadow-lg d-none fixed-top" style="z-index: 1080; border-bottom: 4px solid #842029; background-color: #dc3545 !important;">
-    <div class="container d-flex align-items-center justify-content-between flex-wrap gap-2">
-        <div class="d-flex align-items-center gap-3">
-            <i class="bi bi-alarm-fill fs-2 text-white animate-pulse"></i>
-            <div>
-                <strong class="fs-6 d-block uppercase text-white fw-bold"><i class="bi bi-exclamation-triangle-fill me-1 text-warning"></i> 🔴 URGENT RED WARNING: TIME EXPIRED FOR JOB(S)! SUBMIT WORK NOW!</strong>
-                <span id="slidingBannerDetails" class="small fw-bold text-white bg-dark px-2 py-1 rounded d-inline-block mt-1">Please click "I HAVE SUBMITTED" for your expired matriculation numbers!</span>
-            </div>
+<!-- Compact Slim Top Sliding Alert Ticker Line for Expired Job Submissions -->
+<div id="slidingTimeExpiredBanner" class="sliding-ticker-banner bg-danger text-white py-1 px-3 d-none fixed-top shadow-lg" style="z-index: 1080; border-bottom: 2px solid #ffc107; background-color: #dc3545 !important;">
+    <div class="container-fluid d-flex align-items-center justify-content-between">
+        <div class="d-flex align-items-center gap-2 overflow-hidden text-nowrap">
+            <span class="badge bg-warning text-dark fw-bold me-1 animate-pulse"><i class="bi bi-alarm-fill me-1"></i>🔴 TIME EXPIRED</span>
+            <span id="slidingBannerDetails" class="fw-bold small text-white">Please submit Matriculation No & Course Code now!</span>
         </div>
         <div>
-            <a href="#userDashboardContent" class="btn btn-light btn-sm fw-bold text-danger px-3 shadow-sm border border-white">
-                <i class="bi bi-arrow-down-circle-fill me-1 text-danger"></i> Go to Job & Submit Now
+            <a href="#userDashboardContent" class="btn btn-warning btn-sm py-0 px-2 fw-bold text-dark text-nowrap" style="font-size: 0.78rem;">
+                <i class="bi bi-arrow-down-circle me-1"></i> Submit Work Now
             </a>
         </div>
     </div>
@@ -447,10 +444,10 @@ document.addEventListener('DOMContentLoaded', function () {
             if (!startStr || isSubmitted) return;
 
             let startTime;
-            if (!isNaN(startStr)) {
+            if (!isNaN(startStr) && startStr.length >= 9) {
                 startTime = parseInt(startStr, 10);
             } else {
-                startTime = new Date(startStr.replace(/-/g, '/')).getTime();
+                startTime = Math.floor(new Date(startStr.replace(/-/g, '/')).getTime() / 1000);
             }
 
             if (isNaN(startTime)) return;
@@ -459,8 +456,8 @@ document.addEventListener('DOMContentLoaded', function () {
             const timerDisplay = container.querySelector('.timer-display');
             const submitSection = container.querySelector('.submit-section');
 
-            const now = new Date().getTime();
-            const elapsedSecs = Math.floor((now - startTime) / 1000);
+            const nowSecs = Math.floor(Date.now() / 1000);
+            const elapsedSecs = nowSecs - startTime;
             const remainingSecs = totalSeconds - elapsedSecs;
 
             if (remainingSecs <= 0) {
@@ -469,9 +466,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (timerDisplay) timerDisplay.className = "alert alert-danger p-2 small mb-2 timer-display shadow-sm fw-bold border-danger animate-pulse";
                 if (submitSection) submitSection.classList.remove('d-none');
 
-                expiredJobsList.push(`Mat: ${matNo} (${courseCode}) at Station: ${stationIp}`);
+                expiredJobsList.push(`${matNo} (${courseCode}) [IP: ${stationIp}]`);
             } else {
-                // Time still running...
+                // Time still running -> Hide Submit button until 45 mins expire!
                 if (submitSection) submitSection.classList.add('d-none');
 
                 const mins = Math.floor(remainingSecs / 60);
@@ -490,15 +487,14 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
 
-        // Sliding Top Alert Banner Control
+        // Compact Slim Ticker Line Banner Control
         if (slidingBanner) {
             if (expiredJobsList.length > 0) {
                 slidingBanner.classList.remove('d-none');
                 if (bannerDetails) {
-                    bannerDetails.innerHTML = `Please click "I HAVE SUBMITTED" for: <strong>${expiredJobsList.join(' | ')}</strong>`;
+                    bannerDetails.innerHTML = `Submit work now for: <strong>${expiredJobsList.join(' | ')}</strong>`;
                 }
             } else {
-                // All expired jobs submitted -> Banner stops & disappears!
                 slidingBanner.classList.add('d-none');
             }
         }

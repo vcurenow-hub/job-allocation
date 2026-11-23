@@ -1394,14 +1394,17 @@ def show_allocation(allocation_id):
         flash("Please enter an IP number or station identifier to open this job.", "danger")
         return redirect(url_for("dashboard"))
 
+    now_epoch = int(time.time())
+    now_str = now()
+
     con.execute("""
         UPDATE allocations SET status='started', shown_at=?, started_at=?, timer_started_at=?, ip_address=?
         WHERE user_id=? AND status='allocated' AND job_id IN (
             SELECT id FROM jobs WHERE session_id=? AND mat_no=?
         )
-    """, (now(), now(), now(), ip_address, user["id"], row["session_id"], row["mat_no"]))
+    """, (now_str, now_str, str(now_epoch), ip_address, user["id"], row["session_id"], row["mat_no"]))
     con.commit()
-    flash(f"Job opened with IP/Station '{ip_address}' and timer started!", "success")
+    flash(f"Job opened with IP/Station '{ip_address}' and 45-minute timer started!", "success")
     return redirect(url_for("dashboard"))
 
 
@@ -1417,8 +1420,16 @@ def submit_allocation(allocation_id):
         return redirect(url_for("dashboard"))
 
     if row["timer_started_at"]:
-        start_dt = datetime.strptime(row["timer_started_at"], "%Y-%m-%d %H:%M:%S")
-        elapsed_secs = (datetime.now() - start_dt).total_seconds()
+        start_val = str(row["timer_started_at"])
+        if start_val.isdigit():
+            elapsed_secs = int(time.time()) - int(start_val)
+        else:
+            try:
+                start_dt = datetime.strptime(start_val, "%Y-%m-%d %H:%M:%S")
+                elapsed_secs = (datetime.now() - start_dt).total_seconds()
+            except ValueError:
+                elapsed_secs = 2700
+
         if elapsed_secs < 2700:
             flash("Submit button is unlocked only when the 45-minute job timer has expired.", "warning")
             return redirect(url_for("dashboard"))
