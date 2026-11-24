@@ -127,6 +127,11 @@
                                 </a>
                             </li>
                             <li class="nav-item">
+                                <a class="nav-link {% if request.endpoint == 'upload_assigned_jobs' %}active{% endif %}" href="{{ url_for('upload_assigned_jobs') }}">
+                                    <i class="bi bi-arrow-counterclockwise me-1"></i> Restore Assigned Jobs
+                                </a>
+                            </li>
+                            <li class="nav-item">
                                 <a class="nav-link {% if request.endpoint == 'admin_jobs' %}active{% endif %}" href="{{ url_for('admin_jobs') }}">
                                     <i class="bi bi-table me-1"></i> All Jobs & Tracking
                                 </a>

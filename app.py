@@ -2360,6 +2360,133 @@ def upload_records():
     return render_template("admin/upload.html", user=current_user(), sessions=sessions, has_gemini_key=has_gemini_key, session_data=session_data)
 
 
+@app.route("/admin/upload-assigned", methods=["GET", "POST"])
+@login_required
+@admin_required
+def upload_assigned_jobs():
+    con = get_db()
+    sessions = con.execute("SELECT * FROM work_sessions ORDER BY sequence").fetchall()
+    session_map = {s["name"]: s["id"] for s in sessions}
+    approved_users = con.execute("SELECT id, username, email FROM users WHERE role='user' AND approved=1 AND active=1 ORDER BY username").fetchall()
+
+    if request.method == "POST":
+        file = request.files.get("file")
+        pasted_text = request.form.get("pasted_text", "").strip()
+        selected_session_val = request.form.get("session_id", "auto")
+
+        try:
+            if pasted_text:
+                records, corrections = parse_records_from_rows(pasted_text.splitlines(), raw_text=pasted_text)
+            elif file and file.filename:
+                records, corrections = extract_upload(file)
+            else:
+                raise ValueError("Please paste assigned job records into the text area or select a CSV/Excel file to upload.")
+
+            if not records:
+                raise ValueError("No valid records were found. Ensure records contain matriculation numbers (nou...) and course codes.")
+
+            added = 0
+            linked_users_count = 0
+            unmatched_records = []
+            forced_sid = int(selected_session_val) if selected_session_val != "auto" and str(selected_session_val).isdigit() else None
+
+            con.execute("BEGIN IMMEDIATE")
+            for r in records:
+                bucket = r["session_bucket"]
+                target_sid = forced_sid if forced_sid is not None else session_map.get(bucket, sessions[0]["id"] if sessions else 1)
+
+                allocated_username = r.get("allocated_user", "").strip()
+                station_ip = r.get("station_ip", "").strip()
+                is_done = r.get("status") in ("finished", "scored")
+
+                target_user = None
+                if allocated_username and allocated_username.lower() not in ("unassigned", "n/a", "none", ""):
+                    target_user = con.execute("""
+                        SELECT * FROM users
+                        WHERE (LOWER(username)=? OR LOWER(email)=?) AND role='user' AND approved=1 AND active=1
+                        ORDER BY id DESC LIMIT 1
+                    """, (allocated_username.lower(), allocated_username.lower())).fetchone()
+
+                job_status = 'finished' if is_done else ('assigned' if target_user else 'available')
+
+                try:
+                    con.execute("""
+                        INSERT INTO jobs(
+                            session_id,mat_no,course_code,student_name,
+                            signature_id,department,source,status,created_at
+                        ) VALUES(?,?,?,?,?,?,?,?,?)
+                    """, (
+                        target_sid, r["mat_no"], r["course_code"],
+                        r["student_name"], r["signature_id"],
+                        r["department"], r["source"], job_status, now()
+                    ))
+                    added += 1
+                    job_id = con.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+                    if is_done:
+                        admin_uid = current_user()["id"]
+                        con.execute("""
+                            INSERT INTO allocations(job_id, user_id, status, created_at, finished_at, score, manual, admin_id)
+                            VALUES(?, ?, 'finished', ?, ?, 100, 1, ?)
+                        """, (job_id, admin_uid, now(), now(), admin_uid))
+                    elif target_user:
+                        linked_users_count += 1
+                        now_epoch = int(time.time())
+                        now_str = now()
+                        ip_val = station_ip if station_ip and station_ip.lower() != 'n/a' else ''
+                        alloc_status = 'started' if ip_val else 'allocated'
+                        con.execute("""
+                            INSERT INTO allocations(job_id, user_id, status, ip_address, created_at, shown_at, started_at, timer_started_at, manual, admin_id)
+                            VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                        """, (job_id, target_user["id"], alloc_status, ip_val, now_str, now_str if ip_val else None, now_str if ip_val else None, str(now_epoch) if ip_val else None, current_user()["id"]))
+                    else:
+                        unmatched_records.append(r)
+
+                except sqlite3.IntegrityError:
+                    job_row = con.execute("""
+                        SELECT id FROM jobs WHERE session_id=? AND mat_no=? AND course_code=?
+                    """, (target_sid, r["mat_no"], r["course_code"])).fetchone()
+                    if job_row:
+                        if is_done:
+                            con.execute("UPDATE jobs SET status='finished' WHERE id=?", (job_row["id"],))
+                            existing_alloc = con.execute("SELECT 1 FROM allocations WHERE job_id=?", (job_row["id"],)).fetchone()
+                            if not existing_alloc:
+                                admin_uid = current_user()["id"]
+                                con.execute("""
+                                    INSERT INTO allocations(job_id, user_id, status, created_at, finished_at, score, manual, admin_id)
+                                    VALUES(?, ?, 'finished', ?, ?, 100, 1, ?)
+                                """, (job_row["id"], admin_uid, now(), now(), admin_uid))
+                        elif target_user:
+                            con.execute("UPDATE jobs SET status='assigned' WHERE id=?", (job_row["id"],))
+                            existing_alloc = con.execute("SELECT 1 FROM allocations WHERE job_id=? AND status != 'reported'", (job_row["id"],)).fetchone()
+                            if not existing_alloc:
+                                linked_users_count += 1
+                                now_epoch = int(time.time())
+                                now_str = now()
+                                ip_val = station_ip if station_ip and station_ip.lower() != 'n/a' else ''
+                                alloc_status = 'started' if ip_val else 'allocated'
+                                con.execute("""
+                                    INSERT INTO allocations(job_id, user_id, status, ip_address, created_at, shown_at, started_at, timer_started_at, manual, admin_id)
+                                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                                """, (job_row["id"], target_user["id"], alloc_status, ip_val, now_str, now_str if ip_val else None, now_str if ip_val else None, str(now_epoch) if ip_val else None, current_user()["id"]))
+
+            con.commit()
+
+            audit(current_user()["id"], "UPLOAD_ASSIGNED_JOBS", f"Uploaded {added} assigned jobs, linked {linked_users_count} directly to user accounts.")
+            msg = f"Successfully processed {added} assigned job records! Re-linked {linked_users_count} jobs directly to active user accounts."
+            if len(unmatched_records) > 0:
+                msg += f" Note: {len(unmatched_records)} records could not be automatically matched to an active username. You can assign them manually on Session Tables."
+            flash(msg, "success")
+            return redirect(url_for("admin_session_tables"))
+
+        except Exception as error:
+            con.rollback()
+            flash(str(error), "danger")
+            return redirect(url_for("upload_assigned_jobs"))
+
+    return render_template("admin/upload_assigned.html", user=current_user(), sessions=sessions, approved_users=approved_users)
+
+
 @app.route("/admin/jobs")
 @login_required
 @admin_required

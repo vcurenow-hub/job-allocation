@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+
+{% block title %}Restore & Upload Earlier Assigned Jobs{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-10">
+        <!-- Main Title Header -->
+        <div class="d-flex align-items-center justify-content-between mb-4">
+            <div>
+                <h2 class="fw-bold mb-1 text-primary">
+                    <i class="bi bi-arrow-counterclockwise text-primary me-2"></i>Restore & Upload Earlier Assigned Jobs
+                </h2>
+                <p class="text-muted mb-0">Dedicated standalone portal for re-uploading and pasting previously assigned jobs (yet-to-finish)</p>
+            </div>
+            <div>
+                <a href="{{ url_for('upload_records') }}" class="btn btn-outline-secondary btn-sm fw-bold">
+                    <i class="bi bi-upload me-1"></i> Standard Upload Page
+                </a>
+            </div>
+        </div>
+
+        <!-- Description & Guide Box -->
+        <div class="card card-custom p-4 mb-4 bg-primary-subtle border-primary shadow-sm">
+            <h5 class="fw-bold text-primary mb-2">
+                <i class="bi bi-info-circle-fill me-2"></i>How Earlier Assigned Job Upload Works
+            </h5>
+            <p class="small text-dark mb-2">
+                This page is a <strong>standalone portal specifically designed for re-uploading or pasting previously assigned jobs that are yet to be finished</strong>.
+            </p>
+            <ul class="small text-dark mb-0 ps-3">
+                <li class="mb-1"><strong>Automatic Username & IP Extraction:</strong> The system automatically extracts the <code>Allocated User</code> (username) and <code>Station IP</code> columns from your CSV/paste.</li>
+                <li class="mb-1"><strong>Automatic User Dashboard Re-Linking:</strong> The active jobs are automatically linked to the user's account and instantly appear under their <strong>"My Active Allocated Work"</strong> tab.</li>
+                <li class="mb-1"><strong>Username Re-Use Support:</strong> If a user re-registered after a website update, their username is automatically matched to their new active account.</li>
+                <li><strong>Admin Manual Fallback:</strong> If any uploaded record cannot find a matching username, you can easily assign it to any user from the <a href="{{ url_for('admin_session_tables') }}" class="fw-bold text-primary">Session Tables</a> page with 1 click.</li>
+            </ul>
+        </div>
+
+        <!-- Dual Upload & Paste Forms Card -->
+        <div class="card card-custom p-4 mb-4 shadow-sm">
+            <h4 class="fw-bold mb-3"><i class="bi bi-file-earmark-plus me-2 text-primary"></i>Upload or Paste Assigned Jobs</h4>
+
+            <form method="post" action="{{ url_for('upload_assigned_jobs') }}" enctype="multipart/form-data">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                <div class="row g-4 mb-4">
+                    <!-- Session Select -->
+                    <div class="col-md-6">
+                        <label class="form-label font-semibold">Target Session Table</label>
+                        <select name="session_id" class="form-select">
+                            <option value="auto" selected>🌐 Auto-Detect Session from Time Header</option>
+                            {% for s in sessions %}
+                                <option value="{{ s.id }}">{{ s.name }} Session Table</option>
+                            {% endfor %}
+                        </select>
+                        <div class="form-text">Choose a specific session table or let the system auto-detect.</div>
+                    </div>
+
+                    <!-- File Upload Input -->
+                    <div class="col-md-6">
+                        <label class="form-label font-semibold">Upload Exported Assigned Jobs CSV / File</label>
+                        <input type="file" name="file" class="form-control" accept=".csv,.xlsx,.txt,.docx">
+                        <div class="form-text">Upload CSV file exported from Assigned Jobs.</div>
+                    </div>
+                </div>
+
+                <!-- Standalone Text Paste Area -->
+                <div class="mb-4">
+                    <label class="form-label font-semibold">Or Paste Assigned Job Records / CSV Text Below:</label>
+                    <textarea name="pasted_text" class="form-control font-monospace" rows="10" placeholder="Paste exported CSV text or rows here...
+Example CSV format:
+Allocation ID,Session Name,Matriculation Number,Course Code,Student Name,Department,Signature ID,Allocated User,Station IP,Status
+#101,8:00 AM,nou123456789,BED111,Jane Doe,Education,SIG-101,activeuser1,172.16.0.45,ASSIGNED"></textarea>
+                    <div class="form-text mt-1">
+                        <i class="bi bi-check-circle-fill text-success me-1"></i> Supports CSV format, tab-separated, or space-separated text rows with Allocated User and Station IP.
+                    </div>
+                </div>
+
+                <div class="d-flex justify-content-end gap-2">
+                    <a href="{{ url_for('admin_dashboard') }}" class="btn btn-secondary fw-bold px-4">Cancel</a>
+                    <button type="submit" class="btn btn-primary fw-bold px-4 shadow-sm">
+                        <i class="bi bi-arrow-repeat me-1"></i> Process & Restore Assigned Jobs
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
