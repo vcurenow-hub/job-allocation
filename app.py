@@ -2204,15 +2204,20 @@ def upload_records():
             if selected_session_val != "auto" and str(selected_session_val).isdigit():
                 forced_sid = int(selected_session_val)
 
+            valid_sids = [s["id"] for s in sessions]
+            default_sid = sessions[0]["id"] if sessions else 1
+
             con.execute("BEGIN IMMEDIATE")
             for r in records:
                 bucket = r["session_bucket"]
                 bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
 
-                if forced_sid is not None:
+                if forced_sid is not None and forced_sid in valid_sids:
                     target_sid = forced_sid
                 else:
-                    target_sid = session_map.get(bucket, sessions[0]["id"] if sessions else 1)
+                    target_sid = session_map.get(bucket)
+                    if not target_sid or target_sid not in valid_sids:
+                        target_sid = default_sid
 
                 is_done = (r["mat_no"], r["course_code"]) in done_set or r.get("status") in ("finished", "scored")
                 allocated_username = r.get("allocated_user", "").strip()
@@ -2233,7 +2238,35 @@ def upload_records():
                 else:
                     job_status = 'available'
 
-                try:
+                existing_job = con.execute("""
+                    SELECT id FROM jobs WHERE session_id=? AND mat_no=? AND course_code=?
+                """, (target_sid, r["mat_no"], r["course_code"])).fetchone()
+
+                if existing_job:
+                    duplicates += 1
+                    job_id = existing_job["id"]
+                    if is_done:
+                        con.execute("UPDATE jobs SET status='finished' WHERE id=?", (job_id,))
+                        existing_alloc = con.execute("SELECT 1 FROM allocations WHERE job_id=?", (job_id,)).fetchone()
+                        if not existing_alloc:
+                            admin_uid = current_user()["id"]
+                            con.execute("""
+                                INSERT INTO allocations(job_id, user_id, status, created_at, finished_at, score, manual, admin_id)
+                                VALUES(?, ?, 'finished', ?, ?, 100, 1, ?)
+                            """, (job_id, admin_uid, now(), now(), admin_uid))
+                    elif target_user:
+                        con.execute("UPDATE jobs SET status='assigned' WHERE id=?", (job_id,))
+                        existing_alloc = con.execute("SELECT 1 FROM allocations WHERE job_id=? AND status != 'reported'", (job_id,)).fetchone()
+                        if not existing_alloc:
+                            now_epoch = int(time.time())
+                            now_str = now()
+                            ip_val = station_ip if station_ip and station_ip.lower() != 'n/a' else ''
+                            alloc_status = 'started' if ip_val else 'allocated'
+                            con.execute("""
+                                INSERT INTO allocations(job_id, user_id, status, ip_address, created_at, shown_at, started_at, timer_started_at, manual, admin_id)
+                                VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                            """, (job_id, target_user["id"], alloc_status, ip_val, now_str, now_str if ip_val else None, now_str if ip_val else None, str(now_epoch) if ip_val else None, current_user()["id"]))
+                else:
                     con.execute("""
                         INSERT INTO jobs(
                             session_id,mat_no,course_code,student_name,
@@ -2263,38 +2296,6 @@ def upload_records():
                             VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                         """, (job_id, target_user["id"], alloc_status, ip_val, now_str, now_str if ip_val else None, now_str if ip_val else None, str(now_epoch) if ip_val else None, current_user()["id"]))
 
-                except sqlite3.IntegrityError:
-                    if is_done:
-                        job_row = con.execute("""
-                            SELECT id FROM jobs WHERE session_id=? AND mat_no=? AND course_code=?
-                        """, (target_sid, r["mat_no"], r["course_code"])).fetchone()
-                        if job_row:
-                            con.execute("UPDATE jobs SET status='finished' WHERE id=?", (job_row["id"],))
-                            existing_alloc = con.execute("SELECT 1 FROM allocations WHERE job_id=?", (job_row["id"],)).fetchone()
-                            if not existing_alloc:
-                                admin_uid = current_user()["id"]
-                                con.execute("""
-                                    INSERT INTO allocations(job_id, user_id, status, created_at, finished_at, score, manual, admin_id)
-                                    VALUES(?, ?, 'finished', ?, ?, 100, 1, ?)
-                                """, (job_row["id"], admin_uid, now(), now(), admin_uid))
-                    elif target_user:
-                        job_row = con.execute("""
-                            SELECT id FROM jobs WHERE session_id=? AND mat_no=? AND course_code=?
-                        """, (target_sid, r["mat_no"], r["course_code"])).fetchone()
-                        if job_row:
-                            con.execute("UPDATE jobs SET status='assigned' WHERE id=?", (job_row["id"],))
-                            existing_alloc = con.execute("SELECT 1 FROM allocations WHERE job_id=? AND status != 'reported'", (job_row["id"],)).fetchone()
-                            if not existing_alloc:
-                                now_epoch = int(time.time())
-                                now_str = now()
-                                ip_val = station_ip if station_ip and station_ip.lower() != 'n/a' else ''
-                                alloc_status = 'started' if ip_val else 'allocated'
-                                con.execute("""
-                                    INSERT INTO allocations(job_id, user_id, status, ip_address, created_at, shown_at, started_at, timer_started_at, manual, admin_id)
-                                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-                                """, (job_row["id"], target_user["id"], alloc_status, ip_val, now_str, now_str if ip_val else None, now_str if ip_val else None, str(now_epoch) if ip_val else None, current_user()["id"]))
-                    duplicates += 1
-
             con.commit()
 
             if auto_allocate and added > 0:
@@ -2302,15 +2303,16 @@ def upload_records():
                     approved_users = con.execute("""
                         SELECT id FROM users WHERE role='user' AND approved=1 AND active=1
                     """).fetchall()
-                    if approved_users:
-                        open_sessions = con.execute("SELECT id FROM work_sessions WHERE is_open=1").fetchall()
-                        for os_row in open_sessions:
-                            sid = os_row["id"]
-                            for u in approved_users:
-                                try:
-                                    allocate_jobs_to_user(con, sid, u["id"], 5, manual=False)
-                                except Exception:
-                                    pass
+                    for u in approved_users:
+                        active_cnt = con.execute("""
+                            SELECT COUNT(*) AS n FROM allocations
+                            WHERE user_id=? AND status IN ('allocated', 'shown', 'started')
+                        """, (u["id"],)).fetchone()["n"]
+                        if active_cnt == 0:
+                            try:
+                                allocate_jobs_mixed_sessions(con, u["id"], 1, manual=False)
+                            except Exception:
+                                pass
                 except Exception:
                     pass
 
@@ -2390,10 +2392,18 @@ def upload_assigned_jobs():
             unmatched_records = []
             forced_sid = int(selected_session_val) if selected_session_val != "auto" and str(selected_session_val).isdigit() else None
 
+            valid_sids = [s["id"] for s in sessions]
+            default_sid = sessions[0]["id"] if sessions else 1
+
             con.execute("BEGIN IMMEDIATE")
             for r in records:
                 bucket = r["session_bucket"]
-                target_sid = forced_sid if forced_sid is not None else session_map.get(bucket, sessions[0]["id"] if sessions else 1)
+                if forced_sid is not None and forced_sid in valid_sids:
+                    target_sid = forced_sid
+                else:
+                    target_sid = session_map.get(bucket)
+                    if not target_sid or target_sid not in valid_sids:
+                        target_sid = default_sid
 
                 allocated_username = r.get("allocated_user", "").strip()
                 station_ip = r.get("station_ip", "").strip()
@@ -2409,7 +2419,35 @@ def upload_assigned_jobs():
 
                 job_status = 'finished' if is_done else ('assigned' if target_user else 'available')
 
-                try:
+                existing_job = con.execute("""
+                    SELECT id FROM jobs WHERE session_id=? AND mat_no=? AND course_code=?
+                """, (target_sid, r["mat_no"], r["course_code"])).fetchone()
+
+                if existing_job:
+                    job_id = existing_job["id"]
+                    if is_done:
+                        con.execute("UPDATE jobs SET status='finished' WHERE id=?", (job_id,))
+                        existing_alloc = con.execute("SELECT 1 FROM allocations WHERE job_id=?", (job_id,)).fetchone()
+                        if not existing_alloc:
+                            admin_uid = current_user()["id"]
+                            con.execute("""
+                                INSERT INTO allocations(job_id, user_id, status, created_at, finished_at, score, manual, admin_id)
+                                VALUES(?, ?, 'finished', ?, ?, 100, 1, ?)
+                            """, (job_id, admin_uid, now(), now(), admin_uid))
+                    elif target_user:
+                        con.execute("UPDATE jobs SET status='assigned' WHERE id=?", (job_id,))
+                        existing_alloc = con.execute("SELECT 1 FROM allocations WHERE job_id=? AND status != 'reported'", (job_id,)).fetchone()
+                        if not existing_alloc:
+                            linked_users_count += 1
+                            now_epoch = int(time.time())
+                            now_str = now()
+                            ip_val = station_ip if station_ip and station_ip.lower() != 'n/a' else ''
+                            alloc_status = 'started' if ip_val else 'allocated'
+                            con.execute("""
+                                INSERT INTO allocations(job_id, user_id, status, ip_address, created_at, shown_at, started_at, timer_started_at, manual, admin_id)
+                                VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                            """, (job_id, target_user["id"], alloc_status, ip_val, now_str, now_str if ip_val else None, now_str if ip_val else None, str(now_epoch) if ip_val else None, current_user()["id"]))
+                else:
                     con.execute("""
                         INSERT INTO jobs(
                             session_id,mat_no,course_code,student_name,
@@ -2441,34 +2479,6 @@ def upload_assigned_jobs():
                         """, (job_id, target_user["id"], alloc_status, ip_val, now_str, now_str if ip_val else None, now_str if ip_val else None, str(now_epoch) if ip_val else None, current_user()["id"]))
                     else:
                         unmatched_records.append(r)
-
-                except sqlite3.IntegrityError:
-                    job_row = con.execute("""
-                        SELECT id FROM jobs WHERE session_id=? AND mat_no=? AND course_code=?
-                    """, (target_sid, r["mat_no"], r["course_code"])).fetchone()
-                    if job_row:
-                        if is_done:
-                            con.execute("UPDATE jobs SET status='finished' WHERE id=?", (job_row["id"],))
-                            existing_alloc = con.execute("SELECT 1 FROM allocations WHERE job_id=?", (job_row["id"],)).fetchone()
-                            if not existing_alloc:
-                                admin_uid = current_user()["id"]
-                                con.execute("""
-                                    INSERT INTO allocations(job_id, user_id, status, created_at, finished_at, score, manual, admin_id)
-                                    VALUES(?, ?, 'finished', ?, ?, 100, 1, ?)
-                                """, (job_row["id"], admin_uid, now(), now(), admin_uid))
-                        elif target_user:
-                            con.execute("UPDATE jobs SET status='assigned' WHERE id=?", (job_row["id"],))
-                            existing_alloc = con.execute("SELECT 1 FROM allocations WHERE job_id=? AND status != 'reported'", (job_row["id"],)).fetchone()
-                            if not existing_alloc:
-                                linked_users_count += 1
-                                now_epoch = int(time.time())
-                                now_str = now()
-                                ip_val = station_ip if station_ip and station_ip.lower() != 'n/a' else ''
-                                alloc_status = 'started' if ip_val else 'allocated'
-                                con.execute("""
-                                    INSERT INTO allocations(job_id, user_id, status, ip_address, created_at, shown_at, started_at, timer_started_at, manual, admin_id)
-                                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-                                """, (job_row["id"], target_user["id"], alloc_status, ip_val, now_str, now_str if ip_val else None, now_str if ip_val else None, str(now_epoch) if ip_val else None, current_user()["id"]))
 
             con.commit()
 
@@ -2573,7 +2583,7 @@ def admin_release_allocation(allocation_id):
 
     try:
         con.execute("BEGIN IMMEDIATE")
-        con.execute("UPDATE allocations SET status='reported' WHERE id=?", (allocation_id,))
+        con.execute("UPDATE allocations SET status='reported' WHERE job_id=? AND status IN ('allocated', 'shown', 'started')", (job_id,))
         con.execute("UPDATE jobs SET status='available' WHERE id=?", (job_id,))
         con.commit()
         audit(current_user()["id"], "RELEASE_JOB", f"Released job #{job_id} ({alloc['mat_no']} / {alloc['course_code']}) back to unallocated pool.")
@@ -2606,10 +2616,11 @@ def admin_reallocate_allocation(allocation_id):
     try:
         new_user_id = int(new_user_id)
         con.execute("BEGIN IMMEDIATE")
-        con.execute("UPDATE allocations SET status='reported' WHERE id=?", (allocation_id,))
+        con.execute("UPDATE allocations SET status='reported' WHERE job_id=? AND status IN ('allocated', 'shown', 'started')", (alloc["job_id"],))
+        con.execute("UPDATE jobs SET status='available' WHERE id=?", (alloc["job_id"],))
         create_allocation(con, alloc["job_id"], new_user_id, manual=True, admin_id=current_user()["id"])
         con.commit()
-        audit(current_user()["id"], "REALLOCATE_JOB", f"Reallocated job #{alloc['job_id']} to user ID {new_user_id}")
+        audit(current_user()["id"], "REALLOCATE_JOB", f"Reallocated job #{alloc['job_id']} ({alloc['mat_no']} / {alloc['course_code']}) to user ID {new_user_id}")
         flash("Job successfully reallocated to the selected user.", "success")
     except Exception as e:
         con.rollback()

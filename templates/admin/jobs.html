@@ -82,38 +82,44 @@
                                     {% endif %}
                                 </td>
                                 <td>
-                                    {% if r.status == 'available' %}
-                                        <span class="badge bg-success">Available</span>
-                                    {% elif r.status == 'assigned' %}
-                                        <span class="badge bg-primary">Assigned</span>
-                                    {% elif r.status == 'review' %}
-                                        <span class="badge bg-danger">Under Review</span>
+                                    {% if r.allocation_status == 'allocated' %}
+                                        <span class="badge bg-danger text-white fw-bold px-2 py-1"><i class="bi bi-pause-circle me-1"></i> ASSIGNED (YET TO START)</span>
+                                    {% elif r.allocation_status in ['shown', 'started'] %}
+                                        <span class="badge bg-warning text-dark fw-bold px-2 py-1"><i class="bi bi-play-circle me-1"></i> STARTED / IN PROGRESS</span>
+                                        {% if r.ip_address %}
+                                            <div class="small font-monospace text-success fw-bold mt-1"><i class="bi bi-hdd-network me-1"></i>Station: {{ r.ip_address }}</div>
+                                        {% endif %}
+                                    {% elif r.allocation_status in ['finished', 'scored'] %}
+                                        <span class="badge bg-success text-white fw-bold px-2 py-1"><i class="bi bi-check-circle me-1"></i> FINISHED / SUBMITTED</span>
+                                    {% elif r.status == 'available' %}
+                                        <span class="badge bg-info text-dark px-2 py-1"><i class="bi bi-slash-circle me-1"></i> UNASSIGNED (AVAILABLE)</span>
                                     {% else %}
-                                        <span class="badge bg-secondary">{{ r.status }}</span>
+                                        <span class="badge bg-secondary px-2 py-1">{{ (r.allocation_status or r.status).upper() }}</span>
                                     {% endif %}
                                 </td>
                                 <td>
                                     {% if r.assigned_user %}
-                                        <span class="badge bg-info text-dark fw-bold"><i class="bi bi-person-fill me-1"></i>{{ r.assigned_user }}</span>
+                                        <span class="badge bg-primary text-white fw-bold fs-6"><i class="bi bi-person-fill me-1"></i>{{ r.assigned_user }}</span>
                                         {% if r.allocation_status in ['finished', 'scored'] %}
                                             <div class="badge bg-success text-white mt-1">✓ Done by {{ r.assigned_user }}</div>
                                         {% endif %}
                                         {% if r.manual %}
-                                            <div class="small text-warning fw-semibold mt-1">Manual Assign</div>
+                                            <div class="small text-warning fw-semibold mt-1"><i class="bi bi-hand-index me-1"></i>Manual Assign</div>
                                         {% endif %}
                                     {% else %}
-                                        <span class="text-muted small italic">Unassigned</span>
+                                        <span class="text-muted small fw-bold">Unassigned</span>
                                     {% endif %}
                                 </td>
                                 <td>
-                                    {% if r.allocation_status %}
-                                        <span class="badge badge-{{ r.allocation_status }} px-2 py-1">{{ r.allocation_status.upper() }}</span>
-                                        {% if r.allocation_status == 'started' and r.timer_started_at %}
-                                            <div class="admin-timer mt-1 small text-info fw-bold" data-timer-start="{{ r.timer_started_at }}">
-                                                <i class="bi bi-clock me-1"></i> <span class="admin-countdown">...</span>
-                                            </div>
-                                        {% endif %}
-                                    {% else %}
+                                    {% if r.allocated_at or r.created_at %}
+                                        <div class="small fw-bold text-dark mb-1"><i class="bi bi-calendar-event text-primary me-1"></i>Allocated At: <br><span class="font-monospace">{{ r.allocated_at or r.created_at }}</span></div>
+                                    {% endif %}
+                                    {% if r.allocation_status == 'started' and r.timer_started_at %}
+                                        <div class="admin-timer small text-danger fw-bold" data-timer-start="{{ r.timer_started_at }}">
+                                            <i class="bi bi-clock me-1"></i> <span class="admin-countdown">Calculating...</span>
+                                        </div>
+                                    {% endif %}
+                                    {% if not r.allocated_at and not r.created_at %}
                                         <span class="text-muted small">-</span>
                                     {% endif %}
                                 </td>
