@@ -436,11 +436,17 @@ def current_user():
     user_id = session.get("user_id")
     if not user_id:
         return None
-    con = get_db()
-    user = con.execute(
-        "SELECT * FROM users WHERE id=?", (user_id,)
-    ).fetchone()
-    return user
+    try:
+        con = get_db()
+        user = con.execute(
+            "SELECT * FROM users WHERE id=? AND active=1", (user_id,)
+        ).fetchone()
+        if not user:
+            session.clear()
+            return None
+        return user
+    except Exception:
+        return None
 
 
 def login_required(fn):
@@ -984,6 +990,9 @@ def parse_records_from_rows(rows_data, raw_text=""):
             "department": department,
             "time_str": time_str,
             "session_bucket": session_bucket,
+            "allocated_user": str(item.get("allocated_user", "")).strip() if isinstance(item, dict) else "",
+            "station_ip": str(item.get("station_ip", "")).strip() if isinstance(item, dict) else "",
+            "status": str(item.get("status", "")).strip().lower() if isinstance(item, dict) else "",
             "source": source,
         })
 
@@ -1019,6 +1028,9 @@ def extract_upload(file):
         name_idx = -1
         dept_idx = -1
         sig_idx = -1
+        user_idx = -1
+        ip_idx = -1
+        status_idx = -1
 
         for idx, col in enumerate(header):
             if "mat" in col or "matric" in col:
@@ -1031,6 +1043,12 @@ def extract_upload(file):
                 dept_idx = idx
             elif "sig" in col or "signature" in col:
                 sig_idx = idx
+            elif ("user" in col or "allocated" in col or "username" in col) and not col.endswith(" at") and not col.endswith("_at") and "date" not in col and "time" not in col:
+                user_idx = idx
+            elif "ip" in col or "station" in col:
+                ip_idx = idx
+            elif "status" in col:
+                status_idx = idx
 
         if mat_idx != -1 and course_idx != -1:
             dict_records = []
@@ -1043,6 +1061,9 @@ def extract_upload(file):
                     "student_name": row[name_idx] if name_idx != -1 and name_idx < len(row) else "",
                     "department": row[dept_idx] if dept_idx != -1 and dept_idx < len(row) else "",
                     "signature_id": row[sig_idx] if sig_idx != -1 and sig_idx < len(row) else "",
+                    "allocated_user": row[user_idx] if user_idx != -1 and user_idx < len(row) else "",
+                    "station_ip": row[ip_idx] if ip_idx != -1 and ip_idx < len(row) else "",
+                    "status": row[status_idx] if status_idx != -1 and status_idx < len(row) else "",
                     "source": " | ".join(row),
                 })
             return parse_records_from_rows(dict_records)
@@ -1067,6 +1088,9 @@ def extract_upload(file):
         name_idx = -1
         dept_idx = -1
         sig_idx = -1
+        user_idx = -1
+        ip_idx = -1
+        status_idx = -1
 
         for idx, col in enumerate(header):
             if "mat" in col or "matric" in col:
@@ -1079,6 +1103,12 @@ def extract_upload(file):
                 dept_idx = idx
             elif "sig" in col or "signature" in col:
                 sig_idx = idx
+            elif ("user" in col or "allocated" in col or "username" in col) and not col.endswith(" at") and not col.endswith("_at") and "date" not in col and "time" not in col:
+                user_idx = idx
+            elif "ip" in col or "station" in col:
+                ip_idx = idx
+            elif "status" in col:
+                status_idx = idx
 
         if mat_idx != -1 and course_idx != -1:
             dict_records = []
@@ -1091,6 +1121,9 @@ def extract_upload(file):
                     "student_name": row[name_idx] if name_idx != -1 and name_idx < len(row) else "",
                     "department": row[dept_idx] if dept_idx != -1 and dept_idx < len(row) else "",
                     "signature_id": row[sig_idx] if sig_idx != -1 and sig_idx < len(row) else "",
+                    "allocated_user": row[user_idx] if user_idx != -1 and user_idx < len(row) else "",
+                    "station_ip": row[ip_idx] if ip_idx != -1 and ip_idx < len(row) else "",
+                    "status": row[status_idx] if status_idx != -1 and status_idx < len(row) else "",
                     "source": " | ".join(row),
                 })
             return parse_records_from_rows(dict_records)
@@ -2181,8 +2214,24 @@ def upload_records():
                 else:
                     target_sid = session_map.get(bucket, sessions[0]["id"] if sessions else 1)
 
-                is_done = (r["mat_no"], r["course_code"]) in done_set
-                job_status = 'finished' if is_done else 'available'
+                is_done = (r["mat_no"], r["course_code"]) in done_set or r.get("status") in ("finished", "scored")
+                allocated_username = r.get("allocated_user", "").strip()
+                station_ip = r.get("station_ip", "").strip()
+
+                target_user = None
+                if allocated_username and allocated_username.lower() not in ("unassigned", "n/a", "none", ""):
+                    target_user = con.execute("""
+                        SELECT * FROM users
+                        WHERE (LOWER(username)=? OR LOWER(email)=?) AND role='user' AND approved=1 AND active=1
+                        ORDER BY id DESC LIMIT 1
+                    """, (allocated_username.lower(), allocated_username.lower())).fetchone()
+
+                if is_done:
+                    job_status = 'finished'
+                elif target_user:
+                    job_status = 'assigned'
+                else:
+                    job_status = 'available'
 
                 try:
                     con.execute("""
@@ -2204,6 +2253,16 @@ def upload_records():
                             INSERT INTO allocations(job_id, user_id, status, created_at, finished_at, score, manual, admin_id)
                             VALUES(?, ?, 'finished', ?, ?, 100, 1, ?)
                         """, (job_id, admin_uid, now(), now(), admin_uid))
+                    elif target_user:
+                        now_epoch = int(time.time())
+                        now_str = now()
+                        ip_val = station_ip if station_ip and station_ip.lower() != 'n/a' else ''
+                        alloc_status = 'started' if ip_val else 'allocated'
+                        con.execute("""
+                            INSERT INTO allocations(job_id, user_id, status, ip_address, created_at, shown_at, started_at, timer_started_at, manual, admin_id)
+                            VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                        """, (job_id, target_user["id"], alloc_status, ip_val, now_str, now_str if ip_val else None, now_str if ip_val else None, str(now_epoch) if ip_val else None, current_user()["id"]))
+
                 except sqlite3.IntegrityError:
                     if is_done:
                         job_row = con.execute("""
@@ -2218,6 +2277,22 @@ def upload_records():
                                     INSERT INTO allocations(job_id, user_id, status, created_at, finished_at, score, manual, admin_id)
                                     VALUES(?, ?, 'finished', ?, ?, 100, 1, ?)
                                 """, (job_row["id"], admin_uid, now(), now(), admin_uid))
+                    elif target_user:
+                        job_row = con.execute("""
+                            SELECT id FROM jobs WHERE session_id=? AND mat_no=? AND course_code=?
+                        """, (target_sid, r["mat_no"], r["course_code"])).fetchone()
+                        if job_row:
+                            con.execute("UPDATE jobs SET status='assigned' WHERE id=?", (job_row["id"],))
+                            existing_alloc = con.execute("SELECT 1 FROM allocations WHERE job_id=? AND status != 'reported'", (job_row["id"],)).fetchone()
+                            if not existing_alloc:
+                                now_epoch = int(time.time())
+                                now_str = now()
+                                ip_val = station_ip if station_ip and station_ip.lower() != 'n/a' else ''
+                                alloc_status = 'started' if ip_val else 'allocated'
+                                con.execute("""
+                                    INSERT INTO allocations(job_id, user_id, status, ip_address, created_at, shown_at, started_at, timer_started_at, manual, admin_id)
+                                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                                """, (job_row["id"], target_user["id"], alloc_status, ip_val, now_str, now_str if ip_val else None, now_str if ip_val else None, str(now_epoch) if ip_val else None, current_user()["id"]))
                     duplicates += 1
 
             con.commit()
@@ -2326,11 +2401,11 @@ def admin_session_tables():
         rows = con.execute("""
             SELECT j.*, a.id AS allocation_id, a.status AS allocation_status,
                    a.score, a.manual, a.created_at AS allocated_at,
-                   a.started_at, a.finished_at,
+                   a.started_at, a.finished_at, a.ip_address AS allocation_ip,
                    u.username AS assigned_user
             FROM jobs j
             LEFT JOIN allocations a ON a.id = (
-                SELECT MAX(id) FROM allocations WHERE job_id = j.id AND status != 'reported'
+                SELECT MAX(id) FROM allocations WHERE job_id = j.id
             )
             LEFT JOIN users u ON u.id = a.user_id
             WHERE j.session_id = ?
@@ -2412,6 +2487,52 @@ def admin_reallocate_allocation(allocation_id):
     except Exception as e:
         con.rollback()
         flash(f"Error reallocating job: {e}", "danger")
+
+    return redirect(request.referrer or url_for("admin_session_tables"))
+
+
+@app.route("/admin/job/<int:job_id>/assign-user", methods=["POST"])
+@login_required
+@admin_required
+def admin_assign_job_to_user(job_id):
+    con = get_db()
+    job = con.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if not job:
+        abort(404)
+
+    target_user_id = request.form.get("user_id")
+    if not target_user_id:
+        flash("Please select a user to assign this job to.", "warning")
+        return redirect(request.referrer or url_for("admin_session_tables"))
+
+    try:
+        target_user_id = int(target_user_id)
+        user_target = con.execute("SELECT * FROM users WHERE id=? AND role='user' AND approved=1 AND active=1", (target_user_id,)).fetchone()
+        if not user_target:
+            raise ValueError("Target user not found or not approved.")
+
+        con.execute("BEGIN IMMEDIATE")
+
+        existing_alloc = con.execute("SELECT id FROM allocations WHERE job_id=? AND status != 'reported'", (job_id,)).fetchone()
+        if existing_alloc:
+            con.execute("UPDATE allocations SET status='reported' WHERE id=?", (existing_alloc["id"],))
+
+        now_epoch = int(time.time())
+        now_str = now()
+
+        con.execute("""
+            INSERT INTO allocations(job_id, user_id, status, created_at, shown_at, started_at, timer_started_at, manual, admin_id)
+            VALUES(?, ?, 'started', ?, ?, ?, ?, 1, ?)
+        """, (job_id, target_user_id, now_str, now_str, now_str, str(now_epoch), current_user()["id"]))
+
+        con.execute("UPDATE jobs SET status='assigned' WHERE id=?", (job_id,))
+        con.commit()
+
+        audit(current_user()["id"], "ASSIGN_JOB_TO_USER", f"Admin assigned job #{job_id} ({job['mat_no']} / {job['course_code']}) to user {user_target['username']}")
+        flash(f"Job #{job_id} ({job['mat_no']} / {job['course_code']}) successfully assigned to user '{user_target['username']}'!", "success")
+    except Exception as e:
+        con.rollback()
+        flash(f"Error assigning job to user: {e}", "danger")
 
     return redirect(request.referrer or url_for("admin_session_tables"))
 
@@ -3022,32 +3143,91 @@ def admin_audit_log():
 @admin_required
 def export_csv():
     con = get_db()
-    rows = con.execute("""
-        SELECT u.username,s.name AS session_name,j.mat_no,j.course_code,
-               j.student_name,j.signature_id,j.department,j.source,
-               a.status,a.score,a.manual,a.created_at,a.started_at,a.finished_at
-        FROM allocations a
-        JOIN users u ON u.id=a.user_id
-        JOIN jobs j ON j.id=a.job_id
-        JOIN work_sessions s ON s.id=j.session_id
-        ORDER BY a.id
-    """).fetchall()
+    status_filter = request.args.get("status", "all").strip().lower()
+    sid_filter = request.args.get("session_id")
+
+    query = """
+        SELECT
+            a.id AS allocation_id,
+            s.name AS session_name,
+            j.mat_no,
+            j.course_code,
+            j.student_name,
+            j.department,
+            j.signature_id,
+            COALESCE(u.username, 'Unassigned') AS allocated_user,
+            COALESCE(a.ip_address, 'N/A') AS station_ip,
+            COALESCE(a.status, j.status) AS current_status,
+            a.score,
+            CASE WHEN a.manual = 1 THEN 'Yes' ELSE 'No' END AS is_manual,
+            a.created_at AS allocated_at,
+            a.timer_started_at,
+            a.submitted_at,
+            a.finished_at
+        FROM jobs j
+        JOIN work_sessions s ON s.id = j.session_id
+        LEFT JOIN allocations a ON a.id = (
+            SELECT MAX(id) FROM allocations WHERE job_id = j.id AND status != 'reported'
+        )
+        LEFT JOIN users u ON u.id = a.user_id
+    """
+    conditions = []
+    params = []
+
+    if sid_filter and str(sid_filter).isdigit():
+        conditions.append("j.session_id = ?")
+        params.append(int(sid_filter))
+
+    if status_filter == "assigned":
+        conditions.append("a.status IN ('allocated', 'shown', 'started')")
+    elif status_filter == "finished":
+        conditions.append("(j.status = 'finished' OR a.status IN ('finished', 'scored'))")
+    elif status_filter == "unassigned":
+        conditions.append("a.id IS NULL AND j.status = 'available'")
+    elif status_filter == "reported":
+        conditions.append("(j.status = 'review' OR a.status = 'reported')")
+
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+
+    query += " ORDER BY j.id DESC"
+
+    rows = con.execute(query, params).fetchall()
 
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
-        "Username", "Session", "Matriculation Number", "Course Code",
-        "Student Name", "Signature ID", "Department", "Source",
-        "Status", "Score", "Manual Allocation", "Allocated At",
-        "Started At", "Finished At"
+        "Allocation ID", "Session Name", "Matriculation Number", "Course Code",
+        "Student Name", "Department", "Signature ID", "Allocated User",
+        "Station IP", "Status", "Score %", "Manual Allocation",
+        "Allocated At", "Timer Started At", "Submitted At", "Finished At"
     ])
-    for row in rows:
-        writer.writerow(list(row))
 
+    for r in rows:
+        writer.writerow([
+            r["allocation_id"] or "N/A",
+            r["session_name"],
+            r["mat_no"],
+            r["course_code"],
+            r["student_name"] or "",
+            r["department"] or "",
+            r["signature_id"] or "",
+            r["allocated_user"],
+            r["station_ip"],
+            r["current_status"].upper() if r["current_status"] else "UNKNOWN",
+            r["score"] if r["score"] is not None else "",
+            r["is_manual"],
+            r["allocated_at"] or "",
+            r["timer_started_at"] or "",
+            r["submitted_at"] or "",
+            r["finished_at"] or ""
+        ])
+
+    filename = f"jobs_export_{status_filter}.csv"
     return Response(
         output.getvalue(),
         mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=allocations.csv"}
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
 
